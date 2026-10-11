@@ -27,8 +27,10 @@ add_library(${PROJECT_NAME}-core STATIC
         src/api.cpp
         src/catalog.cpp
         src/db.cpp
+        src/docs.cpp
         src/json_io.cpp
         src/options.cpp
+        src/requirements.cpp
         src/schema.cpp
 )
 target_include_directories(${PROJECT_NAME}-core PUBLIC src)
@@ -49,7 +51,9 @@ if (BUILD_TESTS)
     add_executable(${PROJECT_NAME}-tests
             tests/api_test.cpp
             tests/catalog_test.cpp
+            tests/docs_test.cpp
             tests/options_test.cpp
+            tests/requirements_test.cpp
             tests/schema_test.cpp
     )
     target_link_libraries(${PROJECT_NAME}-tests PRIVATE ${PROJECT_NAME}-core GTest::gtest_main GTest::gmock)

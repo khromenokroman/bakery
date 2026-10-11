@@ -4,6 +4,7 @@
 
 #include "catalog.hpp"
 #include "db.hpp"
+#include "docs.hpp"
 
 namespace httplib {
 class Server;
@@ -36,8 +37,10 @@ class Api {
     [[nodiscard]] Handler guarded(Handler handler);
 
     void register_catalog(httplib::Server &server);
+    void register_docs(httplib::Server &server);
 
     std::string m_web_dir;
     Catalog m_catalog;
+    Documents m_docs;
     Database &m_db;
 };

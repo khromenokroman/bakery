@@ -89,7 +89,7 @@ TEST(Api, ServesWebDir) {
         auto const res = srv.client().Get("/");
         ASSERT_TRUE(res) << "нет ответа: " << httplib::to_string(res.error());
         EXPECT_EQ(res->status, 200);
-        EXPECT_EQ(res->body, "<p>пекарня</p>") << "ожидалось содержимое " << (dir / "index.html");
+        EXPECT_THAT(res->body, testing::StrEq("<p>пекарня</p>")) << "ожидалось содержимое " << (dir / "index.html");
     }
     std::filesystem::remove_all(dir);
 }
@@ -233,4 +233,60 @@ TEST(ApiCatalog, Recipe) {
     EXPECT_EQ(CALL(srv, "DELETE", path).status, 200);
     EXPECT_TRUE(CALL(srv, "GET", path).body.is_null());
     EXPECT_EQ(CALL(srv, "GET", "/api/items/999/recipe").status, 404);
+}
+
+/**
+ * @brief Заявка через API: создание, выборка по дате, изменение, расчёт потребности, удаление.
+ */
+TEST(ApiDocs, OrderAndRequirements) {
+    TestServer srv;
+    auto const flour = CALL(srv, "POST", "/api/items", {{"name", "Мука"}, {"kind", "raw"}, {"unit", "kg"}}).body.at("id");
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Хлеб"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    CALL(srv, "PUT", "/api/items/" + bread.dump() + "/recipe", {{"output_qty", 1000}, {"lines", {{{"component_id", flour}, {"qty", 300}}}}});
+
+    nlohmann::json const order = {
+        {"type", "order"}, {"date", "2026-10-12"}, {"comment", "Иванов"}, {"lines", {{{"item_id", bread}, {"qty", 10000}}}}};
+    auto r = CALL(srv, "POST", "/api/docs", order);
+    ASSERT_EQ(r.status, 201) << r.body;
+    auto const id = r.body.at("id").get<std::int64_t>();
+    EXPECT_EQ(r.body.at("number"), 1);
+    EXPECT_EQ(r.body.at("lines").at(0).at("unit"), "pcs") << r.body;
+
+    EXPECT_EQ(CALL(srv, "GET", "/api/docs?type=order&from=2026-10-12&to=2026-10-12").body.size(), 1U);
+    EXPECT_EQ(CALL(srv, "GET", "/api/docs?type=order&from=2026-10-13").body.size(), 0U);
+
+    auto changed = order;
+    changed["lines"][0]["qty"] = 20000;
+    r = CALL(srv, "PUT", "/api/docs/" + std::to_string(id), changed);
+    ASSERT_EQ(r.status, 200) << r.body;
+
+    r = CALL(srv, "GET", "/api/requirements?docs=" + std::to_string(id));
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_EQ(r.body.at("raw").at(0).at("qty"), 6000) << "20 шт × 0,3 кг муки: " << r.body;
+    EXPECT_TRUE(r.body.at("warnings").empty()) << r.body;
+
+    EXPECT_EQ(CALL(srv, "DELETE", "/api/docs/" + std::to_string(id)).status, 200);
+    EXPECT_EQ(CALL(srv, "GET", "/api/docs/" + std::to_string(id)).status, 404);
+}
+
+/**
+ * @brief Ошибки API документов: нет вида, неверная дата фильтра, неверный и пустой список заявок.
+ */
+TEST(ApiDocs, Errors) {
+    TestServer srv;
+    auto r = CALL(srv, "POST", "/api/docs", {{"date", "2026-10-12"}, {"lines", nlohmann::json::array()}});
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("нет поля type"));
+
+    r = CALL(srv, "GET", "/api/docs?from=вчера");
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("неверная дата"));
+
+    r = CALL(srv, "GET", "/api/requirements?docs=1,x");
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("неверный список id"));
+
+    r = CALL(srv, "GET", "/api/requirements");
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("не выбрано ни одной заявки"));
 }

@@ -6,6 +6,8 @@
 #include <string_view>
 
 #include "catalog.hpp"
+#include "docs.hpp"
+#include "requirements.hpp"
 
 /**
  * @brief Разбирает тело запроса как JSON-объект.
@@ -30,3 +32,13 @@
 
 /// Рецептура из {"output_qty": N, "lines": [{"component_id": id, "qty": N}, ...]}.
 [[nodiscard]] Recipe recipe_from_json(nlohmann::json const &j);
+
+[[nodiscard]] nlohmann::json to_json(Document const &doc);
+[[nodiscard]] nlohmann::json to_json(Requirements const &req);
+
+/**
+ * @brief Документ из {"type", "date", "comment", "lines": [{"item_id", "qty"}]}.
+ *
+ * type необязателен (для изменения существующего документа), comment по умолчанию пустой.
+ */
+[[nodiscard]] Document document_from_json(nlohmann::json const &j);

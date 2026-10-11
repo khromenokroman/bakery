@@ -8,6 +8,7 @@
 
 #include "db.hpp"
 #include "errors.hpp"
+#include "fixture.hpp"
 #include "schema.hpp"
 #include "test_util.hpp"
 
@@ -15,34 +16,8 @@ using testing::ElementsAre;
 
 namespace {
 
-/**
- * @brief Справочник на пустой базе в памяти с помощниками для заполнения.
- */
-class CatalogTest : public testing::Test {
+class CatalogTest : public DbFixture {
    protected:
-    CatalogTest() : m_db{":memory:"}, m_catalog{m_db} { migrate(m_db); }
-
-    std::int64_t add(std::string const &name, Kind kind, Unit unit = Unit::KG) {
-        Item item;
-        item.name = name;
-        item.kind = kind;
-        item.unit = unit;
-        return m_catalog.create(item);
-    }
-
-    /// Рецептура из пар {компонент, количество в тысячных}.
-    static Recipe make_recipe(std::int64_t output_qty, std::vector<std::pair<std::int64_t, std::int64_t>> const &lines) {
-        Recipe r;
-        r.output_qty = output_qty;
-        for (auto const &[id, qty] : lines) {
-            RecipeLine l;
-            l.component_id = id;
-            l.qty = qty;
-            r.lines.push_back(l);
-        }
-        return r;
-    }
-
     std::vector<std::string> names(ItemFilter const &filter = {}) {
         std::vector<std::string> out;
         for (auto const &i : m_catalog.list(filter)) {
@@ -50,9 +25,6 @@ class CatalogTest : public testing::Test {
         }
         return out;
     }
-
-    Database m_db;
-    Catalog m_catalog;
 };
 
 } // namespace
@@ -74,7 +46,7 @@ TEST_F(CatalogTest, ListOrderAndKindFilter) {
  */
 TEST_F(CatalogTest, CreateValidatesName) {
     auto const id = add("  Мука  ", Kind::RAW);
-    EXPECT_EQ(m_catalog.get(id).name, "Мука") << "пробелы по краям должны обрезаться";
+    EXPECT_THAT(m_catalog.get(id).name, testing::StrEq("Мука")) << "пробелы по краям должны обрезаться";
     EXPECT_THROW_REASON(add("Мука", Kind::RAW), UserError, "«Мука» уже есть");
     EXPECT_THROW_REASON(add(" Мука ", Kind::SEMI), UserError, "«Мука» уже есть");
     EXPECT_THROW_REASON(add("   ", Kind::RAW), UserError, "название не может быть пустым");
@@ -107,7 +79,7 @@ TEST_F(CatalogTest, UpdateRename) {
     EXPECT_NO_THROW(m_catalog.update(item)) << "сохранение без смены названия";
     item.name = "Сахар-песок";
     m_catalog.update(item);
-    EXPECT_EQ(m_catalog.get(id).name, "Сахар-песок");
+    EXPECT_THAT(m_catalog.get(id).name, testing::StrEq("Сахар-песок"));
 }
 
 /**
@@ -179,7 +151,7 @@ TEST_F(CatalogTest, RecipeRoundTrip) {
     ASSERT_TRUE(r);
     EXPECT_EQ(r->output_qty, 10000);
     ASSERT_EQ(r->lines.size(), 2U);
-    EXPECT_EQ(r->lines[0].name, "Мука");
+    EXPECT_THAT(r->lines[0].name, testing::StrEq("Мука"));
     EXPECT_EQ(r->lines[0].qty, 6000);
     EXPECT_EQ(r->lines[1].unit, Unit::L) << "единица компонента «Вода»";
     EXPECT_TRUE(m_catalog.get(dough).has_recipe);
@@ -188,7 +160,7 @@ TEST_F(CatalogTest, RecipeRoundTrip) {
     r = m_catalog.recipe(dough);
     ASSERT_TRUE(r);
     ASSERT_EQ(r->lines.size(), 1U) << "старые строки должны замениться, а не добавиться";
-    EXPECT_EQ(r->lines[0].name, "Яйцо");
+    EXPECT_THAT(r->lines[0].name, testing::StrEq("Яйцо"));
 
     m_catalog.remove_recipe(dough);
     EXPECT_FALSE(m_catalog.recipe(dough));

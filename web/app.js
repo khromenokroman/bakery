@@ -284,12 +284,204 @@ function recipeEditor(item, recipe, all) {
             recipe ? el('button', {class: 'danger', onclick: remove}, 'Удалить рецептуру') : null));
 }
 
+// ---------- даты ----------
+
+/** Дата в формате YYYY-MM-DD по местному времени. */
+function isoDate(d) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function shiftDate(iso, days) {
+    const [y, m, d] = iso.split('-').map(Number);
+    return isoDate(new Date(y, m - 1, d + days));
+}
+
+/** "2026-10-12" -> "12.10.2026, пн". */
+function humanDate(iso) {
+    const [y, m, d] = iso.split('-').map(Number);
+    const wd = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'][new Date(y, m - 1, d).getDay()];
+    return `${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}.${y}, ${wd}`;
+}
+
+function lineSummary(lines) {
+    return lines.map(l => `${l.name} ${formatQty(l.qty)} ${UNITS[l.unit]}`).join(', ');
+}
+
+// ---------- заявки ----------
+
+async function renderOrders(view, params) {
+    const date = params.get('date') || isoDate(new Date());
+    const orders = await api('GET', `docs?type=order&from=${date}&to=${date}`);
+    const go = d => { location.hash = '#/orders?date=' + d; };
+
+    const picker = el('input', {type: 'date', value: date, onchange: e => e.target.value && go(e.target.value)});
+    const checks = new Map();
+    const rows = orders.map(doc => {
+        const check = el('input', {type: 'checkbox', checked: true, onclick: e => e.stopPropagation()});
+        checks.set(doc.id, check);
+        return el('tr', {class: 'link', onclick: () => { location.hash = '#/orders/' + doc.id; }},
+            el('td', {}, check),
+            el('td', {class: 'num'}, doc.number),
+            el('td', {}, doc.comment || el('span', {class: 'muted'}, 'без комментария')),
+            el('td', {}, lineSummary(doc.lines)));
+    });
+
+    const calculate = () => {
+        const ids = [...checks].filter(([, c]) => c.checked).map(([id]) => id);
+        if (!ids.length) {
+            showMessage('Отметьте хотя бы одну заявку');
+            return;
+        }
+        location.hash = `#/requirements?date=${date}&docs=${ids.join(',')}`;
+    };
+
+    view.replaceChildren(
+        el('h2', {}, 'Заявки'),
+        el('div', {class: 'toolbar'},
+            el('button', {title: 'Предыдущий день', onclick: () => go(shiftDate(date, -1))}, '←'),
+            picker,
+            el('button', {title: 'Следующий день', onclick: () => go(shiftDate(date, 1))}, '→'),
+            el('span', {class: 'muted'}, humanDate(date)),
+            el('button', {class: 'primary', onclick: () => { location.hash = '#/orders/new?date=' + date; }}, 'Новая заявка')),
+        el('div', {class: 'table-wrap'}, el('table', {},
+            el('thead', {}, el('tr', {}, el('th'), el('th', {class: 'num'}, '№'), el('th', {}, 'От кого'), el('th', {}, 'Состав'))),
+            el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 4, class: 'muted'}, 'На эту дату заявок нет'))))),
+        rows.length ? el('div', {class: 'toolbar', style: 'margin-top: 12px'},
+            el('button', {class: 'primary', onclick: calculate}, 'Рассчитать потребность')) : null);
+}
+
+/**
+ * Карточка заявки; id = null для новой.
+ */
+async function renderOrder(view, id, params) {
+    const [doc, products] = await Promise.all([
+        id ? api('GET', `docs/${id}`) : Promise.resolve(null),
+        api('GET', 'items?kind=product&archived=1'),
+    ]);
+    const inDoc = new Set((doc ? doc.lines : []).map(l => l.item_id));
+    const candidates = products.filter(p => !p.archived || inDoc.has(p.id));
+    const byId = new Map(products.map(p => [p.id, p]));
+    const date = doc ? doc.date : (params.get('date') || isoDate(new Date()));
+
+    const dateInput = el('input', {type: 'date', value: date});
+    const comment = el('input', {value: doc ? doc.comment : '', size: 40, placeholder: 'магазин, имя, телефон'});
+    const tbody = el('tbody');
+
+    const addRow = line => {
+        const select = el('select', {}, el('option', {value: ''}, '— выберите —'),
+            candidates.map(p => el('option', {value: p.id, selected: line && p.id === line.item_id}, p.name + (p.archived ? ' (архив)' : ''))));
+        const unitCell = el('td');
+        const updateUnit = () => {
+            const p = byId.get(Number(select.value));
+            unitCell.textContent = p ? UNITS[p.unit] : '';
+        };
+        select.addEventListener('change', updateUnit);
+        updateUnit();
+        const row = el('tr', {},
+            el('td', {}, select),
+            el('td', {class: 'num'}, el('input', {class: 'qty', value: line ? formatQty(line.qty) : ''})),
+            unitCell,
+            el('td', {}, el('button', {class: 'danger', title: 'Убрать строку', onclick: () => row.remove()}, '✕')));
+        tbody.append(row);
+        return row;
+    };
+    (doc ? doc.lines : []).forEach(addRow);
+    if (!doc) {
+        addRow(null);
+    }
+
+    const save = async () => {
+        const lines = [];
+        for (const row of tbody.children) {
+            const itemId = Number(row.querySelector('select').value);
+            const qtyText = row.querySelector('input').value;
+            if (!itemId && !qtyText.trim()) {
+                continue;
+            }
+            if (!itemId) {
+                showMessage('В строке не выбрана продукция');
+                return;
+            }
+            const qty = parseQty(qtyText);
+            if (qty === null) {
+                showMessage(`«${byId.get(itemId).name}»: введите количество, не более трёх знаков после запятой`);
+                return;
+            }
+            lines.push({item_id: itemId, qty});
+        }
+        const body = {type: 'order', date: dateInput.value, comment: comment.value, lines};
+        let saved;
+        if (await attempt(async () => {
+            saved = await api(doc ? 'PUT' : 'POST', doc ? `docs/${doc.id}` : 'docs', body);
+        }, 'Заявка сохранена')) {
+            location.hash = '#/orders?date=' + saved.date;
+        }
+    };
+    const remove = async () => {
+        if (confirm(`Удалить заявку № ${doc.number}?`) && await attempt(() => api('DELETE', `docs/${doc.id}`), 'Заявка удалена')) {
+            location.hash = '#/orders?date=' + doc.date;
+        }
+    };
+
+    view.replaceChildren(
+        el('a', {class: 'back', href: '#/orders?date=' + date}, '← Заявки'),
+        el('h2', {}, doc ? `Заявка № ${doc.number}` : 'Новая заявка'),
+        el('div', {class: 'fields'},
+            el('label', {}, 'Дата', dateInput),
+            el('label', {}, 'От кого', comment)),
+        el('div', {class: 'table-wrap', style: 'margin-top: 12px'}, el('table', {},
+            el('thead', {}, el('tr', {}, el('th', {}, 'Продукция'), el('th', {class: 'num'}, 'Количество'), el('th', {}, 'Ед.'), el('th'))),
+            tbody)),
+        el('div', {class: 'toolbar', style: 'margin-top: 8px'},
+            el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка'),
+            el('button', {class: 'primary', onclick: save}, 'Сохранить'),
+            doc ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null));
+}
+
+// ---------- расчёт потребности ----------
+
+function needsTable(title, needs, note) {
+    if (!needs.length) {
+        return null;
+    }
+    return el('section', {},
+        el('h3', {}, title),
+        note ? el('p', {class: 'muted'}, note) : null,
+        el('div', {class: 'table-wrap'}, el('table', {class: 'needs'},
+            el('thead', {}, el('tr', {}, el('th', {}, 'Наименование'), el('th', {class: 'num'}, 'Количество'), el('th', {}, 'Ед.'))),
+            el('tbody', {}, needs.map(n => el('tr', {},
+                el('td', {}, n.name),
+                el('td', {class: 'num'}, formatQty(n.qty)),
+                el('td', {}, UNITS[n.unit])))))));
+}
+
+async function renderRequirements(view, params) {
+    const docs = params.get('docs') || '';
+    const date = params.get('date');
+    const [req, orders] = await Promise.all([
+        api('GET', 'requirements?docs=' + encodeURIComponent(docs)),
+        Promise.all(docs.split(',').filter(Boolean).map(id => api('GET', 'docs/' + id))),
+    ]);
+    view.replaceChildren(
+        el('a', {class: 'back no-print', href: '#/orders' + (date ? '?date=' + date : '')}, '← Заявки'),
+        el('h2', {}, 'Потребность' + (date ? ' на ' + humanDate(date) : '')),
+        el('p', {class: 'muted'}, 'Заявки: ' + orders.map(o => `№ ${o.number}${o.comment ? ' (' + o.comment + ')' : ''}`).join(', ')),
+        req.warnings.length ? el('div', {class: 'warnings'}, req.warnings.map(w => el('div', {}, '⚠ ' + w))) : null,
+        needsTable('Произвести', req.products),
+        needsTable('Полуфабрикаты', req.intermediates, 'Сколько приготовить, чтобы произвести продукцию выше.'),
+        needsTable('Сырьё', req.raw, req.raw.some(n => n.unit === 'pcs') ? 'Штучное сырьё округлено вверх до целых.' : null),
+        el('div', {class: 'toolbar no-print', style: 'margin-top: 16px'},
+            el('button', {class: 'primary', onclick: () => window.print()}, 'Печать')));
+}
+
 // ---------- маршрутизация ----------
 
 async function route() {
     const view = document.getElementById('view');
-    const hash = location.hash || '#/items';
-    const section = hash.split('/')[1];
+    const [hash, query] = (location.hash || '#/items').split('?');
+    const params = new URLSearchParams(query || '');
+    const section = {requirements: 'orders'}[hash.split('/')[1]] || hash.split('/')[1];
     for (const a of document.querySelectorAll('nav a[data-section]')) {
         a.classList.toggle('active', a.dataset.section === section);
     }
@@ -297,6 +489,14 @@ async function route() {
         let m;
         if ((m = hash.match(/^#\/items\/(\d+)$/))) {
             await renderItem(view, Number(m[1]));
+        } else if (hash === '#/orders') {
+            await renderOrders(view, params);
+        } else if (hash === '#/orders/new') {
+            await renderOrder(view, null, params);
+        } else if ((m = hash.match(/^#\/orders\/(\d+)$/))) {
+            await renderOrder(view, Number(m[1]), params);
+        } else if (hash === '#/requirements') {
+            await renderRequirements(view, params);
         } else {
             await renderItems(view);
         }

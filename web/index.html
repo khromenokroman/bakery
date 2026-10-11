@@ -7,18 +7,18 @@
     <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<header>
+<header class="no-print">
     <h1>Учёт пекарни</h1>
     <nav>
         <a href="#/items" data-section="items">Номенклатура</a>
-        <a class="disabled">Заявки</a>
+        <a href="#/orders" data-section="orders">Заявки</a>
         <a class="disabled">Документы</a>
         <a class="disabled">Остатки</a>
     </nav>
 </header>
 <div id="message" hidden></div>
 <main id="view"></main>
-<footer id="version"></footer>
+<footer id="version" class="no-print"></footer>
 <script src="app.js"></script>
 </body>
 </html>

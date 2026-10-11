@@ -111,3 +111,62 @@ Recipe recipe_from_json(nlohmann::json const &j) {
     }
     return recipe;
 }
+
+nlohmann::json to_json(Document const &doc) {
+    auto lines = nlohmann::json::array();
+    for (auto const &l : doc.lines) {
+        lines.push_back({{"item_id", l.item_id}, {"name", l.name}, {"unit", to_string(l.unit)}, {"qty", l.qty}});
+    }
+    return {
+        {"id", doc.id},         {"type", to_string(doc.type)}, {"number", doc.number}, {"date", doc.date},
+        {"status", doc.status}, {"comment", doc.comment},      {"lines", lines},
+    };
+}
+
+nlohmann::json to_json(Requirements const &req) {
+    auto const needs = [](std::vector<Need> const &list) {
+        auto out = nlohmann::json::array();
+        for (auto const &n : list) {
+            out.push_back({
+                {"item_id", n.item_id},
+                {"name", n.name},
+                {"kind", to_string(n.kind)},
+                {"unit", to_string(n.unit)},
+                {"qty", n.qty},
+                {"has_recipe", n.has_recipe},
+            });
+        }
+        return out;
+    };
+    return {
+        {"products", needs(req.products)},
+        {"intermediates", needs(req.intermediates)},
+        {"raw", needs(req.raw)},
+        {"warnings", req.warnings},
+    };
+}
+
+Document document_from_json(nlohmann::json const &j) {
+    Document doc;
+    if (j.contains("type")) {
+        doc.type = doc_type_from_string(get_string(j, "type"));
+    }
+    doc.date = get_string(j, "date");
+    if (j.contains("comment")) {
+        doc.comment = get_string(j, "comment");
+    }
+    auto const &lines = field(j, "lines");
+    if (!lines.is_array()) {
+        throw UserError("поле lines должно быть массивом");
+    }
+    for (auto const &l : lines) {
+        if (!l.is_object()) {
+            throw UserError("строка документа должна быть объектом");
+        }
+        DocLine line;
+        line.item_id = get_int(l, "item_id");
+        line.qty = get_int(l, "qty");
+        doc.lines.push_back(line);
+    }
+    return doc;
+}

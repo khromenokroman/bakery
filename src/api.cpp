@@ -2,6 +2,7 @@
 
 #include <httplib.h>
 
+#include <algorithm>
 #include <charconv>
 #include <exception>
 #include <nlohmann/json.hpp>
@@ -9,6 +10,7 @@
 
 #include "errors.hpp"
 #include "json_io.hpp"
+#include "requirements.hpp"
 #include "schema.hpp"
 
 namespace {
@@ -21,6 +23,23 @@ void send_json(httplib::Response &res, nlohmann::json const &body, int status = 
 }
 
 void send_error(httplib::Response &res, int status, std::string const &message) { send_json(res, {{"error", message}}, status); }
+
+/// Разбирает список id через запятую: "1,2,3".
+std::vector<std::int64_t> parse_ids(std::string const &text) {
+    std::vector<std::int64_t> ids;
+    std::size_t pos = 0;
+    while (pos <= text.size() && !text.empty()) {
+        auto const end = std::min(text.find(',', pos), text.size());
+        std::int64_t id = 0;
+        auto const [ptr, ec] = std::from_chars(text.data() + pos, text.data() + end, id);
+        if (ec != std::errc{} || ptr != text.data() + end) {
+            throw UserError("неверный список id: " + text);
+        }
+        ids.push_back(id);
+        pos = end + 1;
+    }
+    return ids;
+}
 
 /// id из пути запроса; не число означает несуществующий объект.
 std::int64_t path_id(httplib::Request const &req) {
@@ -35,7 +54,7 @@ std::int64_t path_id(httplib::Request const &req) {
 
 } // namespace
 
-Api::Api(Database &db, std::string web_dir) : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_db{db} {}
+Api::Api(Database &db, std::string web_dir) : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_docs{db}, m_db{db} {}
 
 Api::Handler Api::guarded(Handler handler) {
     return [this, handler = std::move(handler)](httplib::Request const &req, httplib::Response &res) {
@@ -55,6 +74,7 @@ void Api::register_routes(httplib::Server &server) {
                    send_json(res, {{"version", BAKERY_VERSION}, {"schema", current_schema_version(m_db)}});
                }));
     register_catalog(server);
+    register_docs(server);
 
     if (!m_web_dir.empty() && !server.set_mount_point("/", m_web_dir)) {
         throw std::runtime_error("каталог веб-интерфейса не найден: " + m_web_dir);
@@ -135,4 +155,54 @@ void Api::register_catalog(httplib::Server &server) {
                       m_catalog.remove_recipe(id);
                       send_json(res, nlohmann::json::object());
                   }));
+}
+
+void Api::register_docs(httplib::Server &server) {
+    server.Get("/api/docs", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   DocFilter filter;
+                   if (req.has_param("type")) {
+                       filter.type = doc_type_from_string(req.get_param_value("type"));
+                   }
+                   if (req.has_param("from")) {
+                       check_date(req.get_param_value("from"));
+                       filter.date_from = req.get_param_value("from");
+                   }
+                   if (req.has_param("to")) {
+                       check_date(req.get_param_value("to"));
+                       filter.date_to = req.get_param_value("to");
+                   }
+                   auto out = nlohmann::json::array();
+                   for (auto const &doc : m_docs.list(filter)) {
+                       out.push_back(to_json(doc));
+                   }
+                   send_json(res, out);
+               }));
+
+    server.Post("/api/docs", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                    auto const j = parse_object(req.body);
+                    if (!j.contains("type")) {
+                        throw UserError("нет поля type");
+                    }
+                    auto const id = m_docs.create(document_from_json(j));
+                    send_json(res, to_json(m_docs.get(id)), 201);
+                }));
+
+    server.Get("/api/docs/:id",
+               guarded([this](httplib::Request const &req, httplib::Response &res) { send_json(res, to_json(m_docs.get(path_id(req)))); }));
+
+    server.Put("/api/docs/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto doc = document_from_json(parse_object(req.body));
+                   doc.id = path_id(req);
+                   m_docs.update(doc);
+                   send_json(res, to_json(m_docs.get(doc.id)));
+               }));
+
+    server.Delete("/api/docs/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                      m_docs.remove(path_id(req));
+                      send_json(res, nlohmann::json::object());
+                  }));
+
+    server.Get("/api/requirements", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   send_json(res, to_json(compute_requirements(m_db, parse_ids(req.get_param_value("docs")))));
+               }));
 }
