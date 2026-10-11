@@ -280,16 +280,17 @@ function recipeEditor(item, recipe, all) {
     };
 
     return el('section', {},
-        el('h3', {}, 'Рецептура'),
+        el('div', {class: 'toolbar section-head'},
+            el('h3', {}, 'Рецептура'),
+            el('button', {class: 'primary', onclick: save}, 'Сохранить рецептуру'),
+            recipe ? el('button', {class: 'danger', onclick: remove}, 'Удалить рецептуру') : null),
         el('div', {class: 'fields'},
             el('label', {}, 'Выход', el('span', {}, output, ' ', UNITS[item.unit]))),
         el('div', {class: 'table-wrap'}, el('table', {},
             el('thead', {}, el('tr', {}, el('th', {}, 'Компонент'), el('th', {class: 'num'}, 'Количество'), el('th', {}, 'Ед.'), el('th'))),
             tbody)),
         el('div', {class: 'toolbar', style: 'margin-top: 8px'},
-            el('button', {onclick: () => addRow(null)}, '+ строка'),
-            el('button', {class: 'primary', onclick: save}, 'Сохранить рецептуру'),
-            recipe ? el('button', {class: 'danger', onclick: remove}, 'Удалить рецептуру') : null));
+            el('button', {onclick: () => addRow(null)}, '+ строка')));
 }
 
 // ---------- даты ----------
@@ -390,12 +391,12 @@ async function renderDoc(view, id, params) {
     const byId = new Map(products.map(p => [p.id, p]));
     const date = doc ? doc.date : (params.get('date') || isoDate(new Date()));
 
-    const dateInput = el('input', {type: 'date', value: date, disabled: posted});
-    const comment = el('input', {value: doc ? doc.comment : '', size: 40, placeholder: cfg.placeholder, disabled: posted});
+    const dateInput = el('input', {type: 'date', value: date});
+    const comment = el('input', {value: doc ? doc.comment : '', size: 40, placeholder: cfg.placeholder});
     const tbody = el('tbody');
 
     const addRow = line => {
-        const select = el('select', {disabled: posted}, el('option', {value: ''}, '— выберите —'),
+        const select = el('select', {}, el('option', {value: ''}, '— выберите —'),
             candidates.map(p => el('option', {value: p.id, selected: line && p.id === line.item_id}, p.name + (p.archived ? ' (архив)' : ''))));
         const unitCell = el('td');
         const updateUnit = () => {
@@ -406,9 +407,9 @@ async function renderDoc(view, id, params) {
         updateUnit();
         const row = el('tr', {},
             el('td', {}, select),
-            el('td', {class: 'num'}, el('input', {class: 'qty', value: line ? formatQty(line.qty) : '', disabled: posted})),
+            el('td', {class: 'num'}, el('input', {class: 'qty', value: line ? formatQty(line.qty) : ''})),
             unitCell,
-            el('td', {}, posted ? null : el('button', {class: 'danger', title: 'Убрать строку', onclick: () => row.remove()}, '✕')));
+            el('td', {}, el('button', {class: 'danger', title: 'Убрать строку', onclick: () => row.remove()}, '✕')));
         tbody.append(row);
         return row;
     };
@@ -452,7 +453,7 @@ async function renderDoc(view, id, params) {
             if (andPost) {
                 saved = await api('POST', `docs/${saved.id}/post`);
             }
-        }, andPost ? 'Сохранено и проведено' : 'Сохранено');
+        }, andPost ? 'Сохранено и проведено' : posted ? 'Сохранено и перепроведено' : 'Сохранено');
         if (saved && !doc && cfg.posting) {
             // документ создан: дальше работаем с ним, даже если проведение не удалось
             history.replaceState(null, '', '#/docs/' + saved.id);
@@ -518,23 +519,26 @@ async function renderDoc(view, id, params) {
     const title = doc ? `${cfg.title} № ${doc.number}` : cfg.create;
     render(view,
         el('a', {class: 'back', href: cfg.back(date)}, cfg.backTitle),
-        el('h2', {}, title, cfg.posting && doc ? el('span', {class: 'status ' + doc.status}, posted ? 'проведён' : 'не проведён') : null),
+        // заголовок и кнопки прилипают к верху окна, чтобы не листать длинный документ
+        el('div', {class: 'actions'},
+            el('h2', {}, title, cfg.posting && doc ? el('span', {class: 'status ' + doc.status}, posted ? 'проведён' : 'не проведён') : null),
+            el('div', {class: 'toolbar'},
+                posted
+                    ? el('button', {class: 'primary', onclick: () => save(false)}, 'Сохранить и перепровести')
+                    : el('button', {class: cfg.posting ? null : 'primary', onclick: () => save(false)}, 'Сохранить'),
+                cfg.posting && !posted ? el('button', {class: 'primary', onclick: () => save(true)}, 'Сохранить и провести') : null,
+                posted ? el('button', {onclick: unpost}, 'Отменить проведение') : null,
+                cfg.fill ? el('button', {onclick: () => openFill(dateInput.value || date).catch(err => showMessage(err.message))}, 'Заполнить по заявкам') : null,
+                doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null)),
         el('div', {class: 'fields'},
             el('label', {}, 'Дата', dateInput),
             el('label', {}, cfg.comment, comment)),
-        cfg.fill && !posted ? el('div', {class: 'toolbar', style: 'margin-top: 12px'},
-            el('button', {onclick: () => openFill(dateInput.value || date).catch(err => showMessage(err.message))}, 'Заполнить по заявкам')) : null,
         fillPanel,
         el('div', {class: 'table-wrap', style: 'margin-top: 12px'}, el('table', {},
             el('thead', {}, el('tr', {}, el('th', {}, 'Продукция'), el('th', {class: 'num'}, 'Количество'), el('th', {}, 'Ед.'), el('th'))),
             tbody)),
         el('div', {class: 'toolbar', style: 'margin-top: 8px'},
-            posted ? null : el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка'),
-            posted ? null : el('button', {class: cfg.posting ? null : 'primary', onclick: () => save(false)}, 'Сохранить'),
-            cfg.posting && !posted ? el('button', {class: 'primary', onclick: () => save(true)}, 'Сохранить и провести') : null,
-            posted ? el('button', {onclick: unpost}, 'Отменить проведение') : null,
-            doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null),
-        posted ? el('p', {class: 'muted'}, 'Проведённый документ не редактируется. Чтобы изменить, отмените проведение.') : null);
+            el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка')));
 }
 
 // ---------- документы ----------
@@ -615,14 +619,14 @@ async function renderRequirements(view, params) {
     ]);
     render(view,
         el('a', {class: 'back no-print', href: '#/orders' + (date ? '?date=' + date : '')}, '← Заявки'),
-        el('h2', {}, 'Потребность' + (date ? ' на ' + humanDate(date) : '')),
+        el('div', {class: 'toolbar section-head', style: 'margin-top: 0'},
+            el('h2', {}, 'Потребность' + (date ? ' на ' + humanDate(date) : '')),
+            el('button', {class: 'primary no-print', onclick: () => window.print()}, 'Печать')),
         el('p', {class: 'muted'}, 'Заявки: ' + orders.map(o => `№ ${o.number}${o.comment ? ' (' + o.comment + ')' : ''}`).join(', ')),
         req.warnings.length ? el('div', {class: 'warnings'}, req.warnings.map(w => el('div', {}, '⚠ ' + w))) : null,
         needsTable('Произвести', req.products),
         needsTable('Полуфабрикаты', req.intermediates, 'Сколько приготовить, чтобы произвести продукцию выше.'),
-        needsTable('Сырьё', req.raw, req.raw.some(n => n.unit === 'pcs') ? 'Штучное сырьё округлено вверх до целых.' : null),
-        el('div', {class: 'toolbar no-print', style: 'margin-top: 16px'},
-            el('button', {class: 'primary', onclick: () => window.print()}, 'Печать')));
+        needsTable('Сырьё', req.raw, req.raw.some(n => n.unit === 'pcs') ? 'Штучное сырьё округлено вверх до целых.' : null));
 }
 
 // ---------- маршрутизация ----------

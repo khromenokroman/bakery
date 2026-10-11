@@ -228,6 +228,28 @@ table.needs {
     max-width: 640px;
 }
 
+.actions {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin: 0 -16px 12px;
+    padding: 8px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+}
+
+.actions h2 {
+    margin-bottom: 8px;
+}
+
+.section-head h2, .section-head h3 {
+    margin: 0 8px 0 0;
+}
+
+.section-head {
+    margin-top: 24px;
+}
+
 .status {
     margin-left: 12px;
     padding: 2px 8px;
@@ -237,7 +259,29 @@ table.needs {
     vertical-align: middle;
 }
 
-td .status {
+td .actions {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin: 0 -16px 12px;
+    padding: 8px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+}
+
+.actions h2 {
+    margin-bottom: 8px;
+}
+
+.section-head h2, .section-head h3 {
+    margin: 0 8px 0 0;
+}
+
+.section-head {
+    margin-top: 24px;
+}
+
+.status {
     margin-left: 0;
 }
 
@@ -261,11 +305,6 @@ td .status {
 
 .panel label.check {
     margin: 4px 0;
-}
-
-input:disabled, select:disabled {
-    background: #f3f3f3;
-    color: var(--fg);
 }
 
 @media print {

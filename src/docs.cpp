@@ -159,13 +159,7 @@ std::int64_t Documents::create(Document const &doc) {
 void Documents::update(Document const &doc) {
     Transaction tx{m_db};
     auto const old = get(doc.id);
-    if (old.status != "draft") {
-        throw UserError("документ проведён, изменить его нельзя");
-    }
-    std::vector<std::int64_t> old_items;
-    for (auto const &l : old.lines) {
-        old_items.push_back(l.item_id);
-    }
+    auto const old_items = item_ids(old);
     auto checked = doc;
     checked.type = old.type;
     validate(checked, old_items);
@@ -177,6 +171,18 @@ void Documents::update(Document const &doc) {
     del.bind(1, doc.id);
     del.step();
     write_lines(doc.id, doc.lines);
+
+    if (old.status == "posted") {
+        // перепроведение: старые движения заменяются новыми, минус проверяется только по итогу
+        auto moves = m_db.prepare("DELETE FROM stock_moves WHERE doc_id = ?");
+        moves.bind(1, doc.id);
+        moves.step();
+        write_moves(get(doc.id));
+        auto items = old_items;
+        auto const fresh = item_ids(checked);
+        items.insert(items.end(), fresh.begin(), fresh.end());
+        Stock{m_db}.check_non_negative(items);
+    }
     tx.commit();
 }
 
@@ -197,16 +203,10 @@ void Documents::post(std::int64_t id) {
     if (doc.status == "posted") {
         throw UserError("документ уже проведён");
     }
-    auto const sign = move_sign(doc.type);
-    if (sign == 0) {
+    if (move_sign(doc.type) == 0) {
         throw UserError("документ этого вида не проводится");
     }
-    auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (?, ?, ?, ?)");
-    for (auto const &line : doc.lines) {
-        ins.reset();
-        ins.bind(1, id).bind(2, line.item_id).bind(3, sign * line.qty).bind(4, doc.date);
-        ins.step();
-    }
+    write_moves(doc);
     auto upd = m_db.prepare("UPDATE docs SET status = 'posted' WHERE id = ?");
     upd.bind(1, id);
     upd.step();
@@ -260,6 +260,16 @@ void Documents::validate(Document const &doc, std::vector<std::int64_t> const &o
         if (line.qty > MAX_QTY) {
             throw UserError(item.name + ": количество больше миллиона единиц");
         }
+    }
+}
+
+void Documents::write_moves(Document const &doc) {
+    auto const sign = move_sign(doc.type);
+    auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (?, ?, ?, ?)");
+    for (auto const &line : doc.lines) {
+        ins.reset();
+        ins.bind(1, doc.id).bind(2, line.item_id).bind(3, sign * line.qty).bind(4, doc.date);
+        ins.step();
     }
 }
 

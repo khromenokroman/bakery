@@ -88,14 +88,11 @@ TEST_F(StockTest, PostAndUnpost) {
 }
 
 /**
- * @brief Проведённый документ нельзя изменить или удалить, заявку нельзя провести.
+ * @brief Проведённый документ нельзя удалить, заявку нельзя провести.
  */
 TEST_F(StockTest, PostedIsReadOnly) {
     auto const id = production("2026-10-12", {{m_bread, 10000}});
     m_docs.post(id);
-    auto doc = make_doc(DocType::PRODUCTION, "2026-10-12", {{m_bread, 1000}});
-    doc.id = id;
-    EXPECT_THROW_REASON(m_docs.update(doc), UserError, "документ проведён, изменить его нельзя");
     EXPECT_THROW_REASON(m_docs.remove(id), UserError, "документ проведён, удалить его нельзя");
     EXPECT_THROW_REASON(m_catalog.remove(m_bread), UserError, "есть в документах");
 
@@ -165,4 +162,66 @@ TEST_F(StockTest, BackdatedDocumentRecalculates) {
     m_docs.post(production("2026-10-10", {{m_bread, 3000}}));
     EXPECT_THAT(balances("2026-10-11"), StrEq("Батон=3000; ")) << "забытое поступление 10-го видно на 11-е";
     EXPECT_THAT(balances("2026-10-12"), StrEq("Батон=13000; ")) << "и на все даты после";
+}
+
+/**
+ * @brief Перепроведение: 40 батонов 12-го, 13-го продано 30, поступление исправляют на 35.
+ *
+ * Отмена проведения отдельно дала бы -30 на 13-е, а перепроведение проверяет только итог: 5 шт.
+ */
+TEST_F(StockTest, RepostChecksOnlyResult) {
+    auto const id = production("2026-10-12", {{m_bread, 40000}});
+    m_docs.post(id);
+    fake_sale("2026-10-13", m_bread, 30000);
+    // отдельная отмена проведения невозможна
+    EXPECT_THROW_REASON(m_docs.unpost(id), UserError, "не хватает 30 шт");
+
+    auto doc = make_doc(DocType::PRODUCTION, "2026-10-12", {{m_bread, 35000}}, "исправлено");
+    doc.id = id;
+    m_docs.update(doc);
+    EXPECT_EQ(m_docs.get(id).status, "posted") << "документ остаётся проведённым";
+    EXPECT_THAT(balances(), StrEq("Батон=5000; "));
+    EXPECT_THAT(balances("2026-10-12"), StrEq("Батон=35000; "));
+}
+
+/**
+ * @brief Перепроведение, после которого остаток уходит в минус, отклоняется и ничего не меняет.
+ */
+TEST_F(StockTest, RepostRejectedKeepsDocument) {
+    auto const id = production("2026-10-12", {{m_bread, 40000}});
+    m_docs.post(id);
+    fake_sale("2026-10-13", m_bread, 30000);
+
+    auto doc = make_doc(DocType::PRODUCTION, "2026-10-12", {{m_bread, 25000}}, "ошибка");
+    doc.id = id;
+    EXPECT_THROW_REASON(m_docs.update(doc), UserError, "«Батон»: остаток на 13.10.2026 уйдёт в минус, не хватает 5 шт");
+    auto const saved = m_docs.get(id);
+    EXPECT_EQ(saved.lines.at(0).qty, 40000) << "строки должны остаться прежними";
+    EXPECT_THAT(saved.comment, StrEq(""));
+    EXPECT_THAT(balances(), StrEq("Батон=10000; "));
+}
+
+/**
+ * @brief Перепроведение с переносом даты и заменой позиции: проверяется и убранная позиция.
+ *
+ * Батон 10 шт заменили на пирог: батона, из которого уже продано 4, не станет, поэтому отказ.
+ * Перенос даты с 12-го на 14-е при продаже 13-го тоже отклоняется.
+ */
+TEST_F(StockTest, RepostChecksRemovedItemsAndDate) {
+    auto const id = production("2026-10-12", {{m_bread, 10000}});
+    m_docs.post(id);
+    fake_sale("2026-10-13", m_bread, 4000);
+
+    auto replaced = make_doc(DocType::PRODUCTION, "2026-10-12", {{m_pie, 2000}});
+    replaced.id = id;
+    EXPECT_THROW_REASON(m_docs.update(replaced), UserError, "«Батон»: остаток на 13.10.2026 уйдёт в минус, не хватает 4 шт");
+
+    auto moved = make_doc(DocType::PRODUCTION, "2026-10-14", {{m_bread, 10000}});
+    moved.id = id;
+    EXPECT_THROW_REASON(m_docs.update(moved), UserError, "остаток на 13.10.2026 уйдёт в минус");
+
+    auto earlier = make_doc(DocType::PRODUCTION, "2026-10-11", {{m_bread, 10000}});
+    earlier.id = id;
+    m_docs.update(earlier);
+    EXPECT_THAT(balances("2026-10-11"), StrEq("Батон=10000; ")) << "дата движений перенесена вместе с документом";
 }
