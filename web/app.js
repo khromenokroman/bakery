@@ -47,7 +47,7 @@ function el(tag, attrs, ...children) {
  * replaceChildren сам вставил бы их текстом "null".
  */
 function render(view, ...children) {
-    render(view,...children.flat().filter(c => c !== null && c !== undefined && c !== false));
+    view.replaceChildren(...children.flat().filter(c => c !== null && c !== undefined && c !== false));
 }
 
 function options(map, selected) {
