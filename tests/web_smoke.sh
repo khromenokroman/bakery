@@ -1,0 +1,71 @@
+#!/bin/bash
+# Проверка страниц веб-интерфейса в headless-браузере.
+# Запускает сервер на временной базе, заполняет её через API и открывает каждую страницу:
+# страница должна нарисовать заголовок <h2>, не показать ошибку и не содержать текста «null».
+#
+# Использование: tests/web_smoke.sh <путь к bakery> <каталог web>
+# Браузер берётся из $CHROME, иначе chromium или google-chrome.
+set -euo pipefail
+
+BIN=$1
+WEB=$2
+PORT=${PORT:-18099}
+CHROME=${CHROME:-$(command -v chromium || command -v google-chrome || true)}
+if [ -z "$CHROME" ]; then
+    echo "web_smoke: не найден chromium или google-chrome" >&2
+    exit 2
+fi
+
+TMP=$(mktemp -d)
+"$BIN" --db "$TMP/smoke.db" --web "$WEB" --port "$PORT" >"$TMP/server.log" 2>&1 &
+PID=$!
+trap 'kill $PID 2>/dev/null || true; wait $PID 2>/dev/null || true; rm -rf "$TMP"' EXIT
+for _ in $(seq 50); do
+    curl -sf "http://127.0.0.1:$PORT/api/version" >/dev/null && break
+    sleep 0.1
+done
+
+API=http://127.0.0.1:$PORT/api
+call() { curl -sf -X "$1" "$API/$2" -H 'Content-Type: application/json' -d "$3"; }
+id() { sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
+
+FLOUR=$(call POST items '{"name":"Мука","kind":"raw","unit":"kg"}' | id)
+EGG=$(call POST items '{"name":"Яйцо","kind":"raw","unit":"pcs"}' | id)
+DOUGH=$(call POST items '{"name":"Тесто","kind":"semi","unit":"kg"}' | id)
+BREAD=$(call POST items '{"name":"Батон","kind":"product","unit":"pcs"}' | id)
+COOKIE=$(call POST items '{"name":"Печенье","kind":"product","unit":"kg"}' | id)
+call PUT "items/$DOUGH/recipe" "{\"output_qty\":1000,\"lines\":[{\"component_id\":$FLOUR,\"qty\":600}]}" >/dev/null
+call PUT "items/$BREAD/recipe" "{\"output_qty\":1000,\"lines\":[{\"component_id\":$DOUGH,\"qty\":450},{\"component_id\":$EGG,\"qty\":100}]}" >/dev/null
+O1=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"lines\":[{\"item_id\":$BREAD,\"qty\":10000}]}" | id)
+O2=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"comment\":\"Магазин\",\"lines\":[{\"item_id\":$COOKIE,\"qty\":1500}]}" | id)
+
+PAGES=(
+    "items"
+    "items/$FLOUR"
+    "items/$BREAD"
+    "orders?date=2026-10-12"
+    "orders?date=2030-01-01"
+    "orders/new"
+    "orders/$O1"
+    "requirements?date=2026-10-12&docs=$O1"
+    "requirements?date=2026-10-12&docs=$O1,$O2"
+)
+
+failed=0
+for page in "${PAGES[@]}"; do
+    dom=$("$CHROME" --headless=new --disable-gpu --no-sandbox --virtual-time-budget=3000 --dump-dom \
+        "http://127.0.0.1:$PORT/#/$page" 2>/dev/null || true)
+    main=$(tr -d '\n' <<<"$dom" | grep -o '<main.*</main>' || true)
+    message=$(grep -oE '<div id="message"[^>]*>[^<]*' <<<"$dom" || true)
+    problems=()
+    grep -q '<h2>' <<<"$main" || problems+=("страница не нарисована (нет <h2>)")
+    grep -q 'hidden' <<<"$message" || problems+=("показана ошибка: ${message#*>}")
+    grep -qE '>[^<]*null[^<]*<' <<<"$main" && problems+=("в тексте есть null")
+    if [ ${#problems[@]} -eq 0 ]; then
+        echo "ok    #/$page"
+    else
+        failed=1
+        printf 'FAIL  #/%s: %s\n' "$page" "$(IFS=';'; echo "${problems[*]}")"
+    fi
+done
+exit $failed

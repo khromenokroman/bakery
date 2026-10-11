@@ -46,6 +46,13 @@ cmake --build build -j"$(nproc)"
 ctest --test-dir build
 ```
 
+Страницы веб-интерфейса проверяются в headless-браузере (нужен `chromium` или `google-chrome`):
+каждая должна нарисоваться без ошибки и без текста «null».
+
+```sh
+tests/web_smoke.sh build/bakery web
+```
+
 HTTP-сервер [cpp-httplib](https://github.com/yhirose/cpp-httplib) подключён как один заголовок
 `third_party/httplib.h` (v0.18.7, MIT): во время работы программе нужна только `libsqlite3`.
 
