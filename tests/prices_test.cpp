@@ -194,3 +194,13 @@ TEST_F(PricesTest, PriceFromMoment) {
     EXPECT_EQ(price(m_v1, m_bread, "2026-10-12 13:00:00"), 4500);
     EXPECT_EQ(price(m_v1, m_bread, "2026-10-12"), 4500) << "одна дата - конец дня";
 }
+
+/**
+ * @brief Проведённая установка цен не пишет складских движений (до 0.13.0.0 писала нулевые).
+ */
+TEST_F(PricesTest, PostingWritesNoMoves) {
+    set_prices(m_v1, "2026-10-10", {{m_bread, 4500}});
+    auto stmt = m_db.prepare("SELECT count(*) FROM stock_moves");
+    stmt.step();
+    EXPECT_EQ(stmt.column_int(0), 0);
+}

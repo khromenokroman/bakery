@@ -540,3 +540,26 @@ TEST(ApiSettings, Requisites) {
     ASSERT_EQ(r.status, 201) << r.body;
     EXPECT_EQ(r.body.at("kpp"), "773601001");
 }
+
+/**
+ * @brief Товарный отчёт через API: суммы и ошибки периода.
+ */
+TEST(ApiReport, Goods) {
+    TestServer srv;
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    auto id = CALL(srv, "POST", "/api/docs",
+                   {{"type", "prices"}, {"date", "2026-10-01"}, {"price_type_id", 1}, {"lines", {{{"item_id", bread}, {"price_kop", 3120}}}}})
+                  .body.at("id");
+    CALL(srv, "POST", "/api/docs/" + id.dump() + "/post");
+    id = CALL(srv, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-10"}, {"lines", {{{"item_id", bread}, {"qty", 40000}}}}})
+             .body.at("id");
+    CALL(srv, "POST", "/api/docs/" + id.dump() + "/post");
+    auto r = CALL(srv, "GET", "/api/report/goods?from=2026-10-10&to=2026-10-12");
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_EQ(r.body.at("in_sum"), 124800);
+    EXPECT_EQ(r.body.at("closing_sum"), 124800);
+    EXPECT_EQ(r.body.at("incoming").at(0).at("type"), "production");
+    EXPECT_EQ(r.body.at("items").at(0).at("closing"), 40000);
+    EXPECT_EQ(CALL(srv, "GET", "/api/report/goods?from=2026-10-12&to=2026-10-10").status, 400);
+    EXPECT_EQ(CALL(srv, "GET", "/api/report/goods?from=x&to=2026-10-10").status, 400);
+}

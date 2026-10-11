@@ -10,6 +10,7 @@
 
 #include "errors.hpp"
 #include "json_io.hpp"
+#include "report.hpp"
 #include "requirements.hpp"
 #include "schema.hpp"
 #include "settings.hpp"
@@ -284,6 +285,15 @@ void Api::register_docs(httplib::Server &server) {
                        out.push_back(to_json(b));
                    }
                    send_json(res, out);
+               }));
+
+    server.Get("/api/report/goods", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   std::optional<std::int64_t> group;
+                   if (req.has_param("group")) {
+                       group = query_id(req, "group");
+                       (void)m_groups.get(*group);
+                   }
+                   send_json(res, to_json(goods_report(m_db, req.get_param_value("from"), req.get_param_value("to"), group)));
                }));
 
     server.Get("/api/requirements", guarded([this](httplib::Request const &req, httplib::Response &res) {

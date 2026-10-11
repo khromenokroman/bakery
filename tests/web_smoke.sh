@@ -94,6 +94,8 @@ PAGES=(
     "print/$P1"
     "print/$SALE2?form=torg12"
     "print/$SALE2?form=upd"
+    "report?from=2026-10-01&to=2026-10-31"
+    "report?from=2026-10-12&to=2026-10-12&group=$PASTRY"
 )
 
 failed=0

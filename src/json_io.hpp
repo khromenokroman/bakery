@@ -10,6 +10,7 @@
 #include "groups.hpp"
 #include "partners.hpp"
 #include "prices.hpp"
+#include "report.hpp"
 #include "requirements.hpp"
 #include "stock.hpp"
 
@@ -68,3 +69,5 @@
 [[nodiscard]] Partner partner_from_json(nlohmann::json const &j, Partner base);
 
 [[nodiscard]] nlohmann::json to_json(Returnable const &r);
+
+[[nodiscard]] nlohmann::json to_json(GoodsReport const &report);

@@ -293,3 +293,45 @@ nlohmann::json to_json(Returnable const &r) {
         {"cost_kop", optional_json(r.cost_kop)},
     };
 }
+
+nlohmann::json to_json(GoodsReport const &report) {
+    auto const docs = [](std::vector<ReportDoc> const &list) {
+        auto out = nlohmann::json::array();
+        for (auto const &d : list) {
+            out.push_back({
+                {"id", d.id},
+                {"type", to_string(d.type)},
+                {"number", d.number},
+                {"date", d.date},
+                {"time", d.time.substr(0, 5)},
+                {"partner_name", d.partner_name},
+                {"sum", d.sum},
+            });
+        }
+        return out;
+    };
+    auto items = nlohmann::json::array();
+    for (auto const &i : report.items) {
+        items.push_back({
+            {"item_id", i.item_id},
+            {"name", i.name},
+            {"unit", to_string(i.unit)},
+            {"opening", i.opening},
+            {"in", i.in},
+            {"out", i.out},
+            {"closing", i.closing},
+            {"opening_sum", i.opening_sum},
+            {"closing_sum", i.closing_sum},
+        });
+    }
+    return {
+        {"opening_sum", report.opening_sum},
+        {"in_sum", report.in_sum},
+        {"out_sum", report.out_sum},
+        {"closing_sum", report.closing_sum},
+        {"lines_without_cost", report.lines_without_cost},
+        {"incoming", docs(report.incoming)},
+        {"outgoing", docs(report.outgoing)},
+        {"items", items},
+    };
+}

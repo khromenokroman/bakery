@@ -562,6 +562,10 @@ void Documents::check_sale_returns(std::int64_t sale_id, std::optional<Document>
 
 void Documents::write_moves(Document const &doc) {
     auto const sign = move_sign(doc.type);
+    if (sign == 0) {
+        // установка цен проводится без складских движений
+        return;
+    }
     auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (?, ?, ?, ?)");
     for (auto const &line : doc.lines) {
         ins.reset();

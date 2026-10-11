@@ -1512,6 +1512,79 @@ function renderUpd(view, doc, s, partner, items) {
                     el('p', {}, 'М.П.')))))));
 }
 
+// ---------- товарный отчёт ----------
+
+/**
+ * Товарный отчёт за период по образцу ТОРГ-29: остаток, приход и расход по документам в суммах
+ * по себестоимости, остаток на конец; приложение - количество по позициям.
+ */
+async function renderReport(view, params) {
+    const today = isoDate(new Date());
+    const from = params.get('from') || today.slice(0, 8) + '01';
+    const to = params.get('to') || today;
+    const groupId = params.get('group') ? Number(params.get('group')) : null;
+    const [report, settings, groups] = await Promise.all([
+        api('GET', `report/goods?from=${from}&to=${to}` + (groupId ? '&group=' + groupId : '')),
+        api('GET', 'settings'),
+        api('GET', 'groups'),
+    ]);
+    const go = (f, t, g) => { location.hash = `#/report?from=${f}&to=${t}` + (g ? '&group=' + g : ''); };
+    const d = iso => humanDate(iso).split(',')[0];
+    const docRow = r => el('tr', {},
+        el('td', {}, DOC_TYPES[r.type].title + (r.partner_name ? ', ' + r.partner_name : '')),
+        el('td', {class: 'center'}, d(r.date) + ' ' + r.time),
+        el('td', {class: 'center'}, el('a', {href: '#/docs/' + r.id}, String(r.number))),
+        el('td', {class: 'num'}, formatMoney(r.sum)),
+        el('td'));
+    const sumRow = (text, sum, strong = true) => el('tr', {class: strong ? 'f-total' : null},
+        el('td', {colspan: 3}, text), el('td', {class: 'num'}, formatMoney(sum)), el('td'));
+    const qtyCell = (qty, unit) => el('td', {class: 'num'}, qty ? formatQty(qty) + ' ' + UNITS[unit] : '');
+
+    render(view,
+        el('div', {class: 'toolbar no-print'},
+            'с', el('input', {type: 'date', value: from, onchange: e => e.target.value && go(e.target.value, to, groupId)}),
+            'по', el('input', {type: 'date', value: to, onchange: e => e.target.value && go(from, e.target.value, groupId)}),
+            'группа', el('select', {onchange: e => go(from, to, selectValue(e.target))}, groupOptions(groups, groupId, 'все')),
+            el('button', {class: 'primary', onclick: () => window.print()}, 'Печать')),
+        report.lines_without_cost ? el('div', {class: 'warnings no-print'},
+            `⚠ строк документов без себестоимости: ${report.lines_without_cost}, они оценены нулём. Установите себестоимость и перепроведите документы.`) : null,
+        el('div', {class: 'print-sheet'},
+            el('p', {class: 'print-org'}, requisitesLine(settings.org_name || 'Организация не указана', settings.org_inn, settings.org_kpp, settings.org_address)),
+            el('h2', {class: 'print-title'}, `Товарный отчёт за период с ${d(from)} по ${d(to)}`),
+            groupId ? el('p', {}, 'Группа: ' + groupPath(groups, groupId)) : null,
+            el('p', {}, 'Материально ответственное лицо: ' + (settings.storekeeper || '____________________')),
+            el('table', {class: 'print-table'},
+                el('thead', {}, el('tr', {},
+                    el('th', {}, 'Наименование'), el('th', {}, 'Дата'), el('th', {}, 'Номер'),
+                    el('th', {class: 'num'}, 'Сумма, ₽'), el('th', {}, 'Отметки бухгалтерии'))),
+                el('tbody', {},
+                    sumRow(`Остаток на ${d(from)}`, report.opening_sum),
+                    el('tr', {}, el('td', {colspan: 5}, el('strong', {}, 'Приход'))),
+                    report.incoming.map(docRow),
+                    sumRow('Итого по приходу', report.in_sum),
+                    sumRow('Итого с остатком', report.opening_sum + report.in_sum),
+                    el('tr', {}, el('td', {colspan: 5}, el('strong', {}, 'Расход'))),
+                    report.outgoing.map(docRow),
+                    sumRow('Итого по расходу', report.out_sum),
+                    sumRow(`Остаток на ${d(to)}`, report.closing_sum))),
+            (n => el('p', {}, `Приложение: ${n} ${plural(n, ['документ', 'документа', 'документов'])}`))(report.incoming.length + report.outgoing.length),
+            el('div', {class: 'print-signs'},
+                el('div', {}, 'Отчёт с документами принял и проверил ____________________ /' + (settings.accountant || '____________') + '/'),
+                el('div', {}, 'Материально ответственное лицо ____________________ /' + (settings.storekeeper || '____________') + '/')),
+            el('h3', {}, 'Приложение: движение по позициям'),
+            el('table', {class: 'print-table'},
+                el('thead', {}, el('tr', {},
+                    el('th', {}, 'Позиция'), el('th', {class: 'num'}, `Остаток на ${d(from)}`), el('th', {class: 'num'}, 'Сумма, ₽'),
+                    el('th', {class: 'num'}, 'Приход'), el('th', {class: 'num'}, 'Расход'),
+                    el('th', {class: 'num'}, `Остаток на ${d(to)}`), el('th', {class: 'num'}, 'Сумма, ₽'))),
+                el('tbody', {}, report.items.length ? report.items.map(i => el('tr', {},
+                    el('td', {}, i.name),
+                    qtyCell(i.opening, i.unit), el('td', {class: 'num'}, formatMoney(i.opening_sum)),
+                    qtyCell(i.in, i.unit), qtyCell(i.out, i.unit),
+                    qtyCell(i.closing, i.unit), el('td', {class: 'num'}, formatMoney(i.closing_sum))))
+                    : el('tr', {}, el('td', {colspan: 7, class: 'muted'}, 'Движений и остатков нет'))))));
+}
+
 // ---------- остатки ----------
 
 async function renderStock(view, params) {
@@ -1528,7 +1601,8 @@ async function renderStock(view, params) {
             el('input', {type: 'date', value: date, onchange: e => e.target.value && go(e.target.value)}),
             el('button', {title: 'Следующий день', onclick: () => go(shiftDate(date, 1))}, '→'),
             el('span', {class: 'muted'}, 'на конец дня ' + humanDate(date))),
-        el('div', {class: 'toolbar'}, 'Группа', groupSelect),
+        el('div', {class: 'toolbar'}, 'Группа', groupSelect,
+            el('button', {onclick: () => { location.hash = '#/report' + (groupId ? '?group=' + groupId : ''); }}, 'Товарный отчёт за период')),
         el('div', {class: 'table-wrap'}, el('table', {class: 'needs'},
             el('thead', {}, el('tr', {}, el('th', {}, 'Продукция'), el('th', {}, 'Группа'), el('th', {class: 'num'}, 'Остаток'), el('th', {}, 'Ед.'))),
             el('tbody', {}, balances.length
@@ -1582,7 +1656,7 @@ async function route() {
     const view = document.getElementById('view');
     const [hash, query] = (location.hash || '#/items').split('?');
     const params = new URLSearchParams(query || '');
-    const section = {requirements: 'orders'}[hash.split('/')[1]] || hash.split('/')[1];
+    const section = {requirements: 'orders', report: 'stock'}[hash.split('/')[1]] || hash.split('/')[1];
     document.body.classList.toggle('print-page', section === 'print');
     for (const a of document.querySelectorAll('nav a[data-section]')) {
         a.classList.toggle('active', a.dataset.section === section);
@@ -1612,6 +1686,8 @@ async function route() {
             await renderPartner(view, Number(m[1]));
         } else if (hash === '#/prices') {
             await renderPrices(view, params);
+        } else if (hash === '#/report') {
+            await renderReport(view, params);
         } else if (hash === '#/stock') {
             await renderStock(view, params);
         } else if (hash === '#/requirements') {

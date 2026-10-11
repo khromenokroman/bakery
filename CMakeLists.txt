@@ -33,6 +33,7 @@ add_library(${PROJECT_NAME}-core STATIC
         src/options.cpp
         src/partners.cpp
         src/prices.cpp
+        src/report.cpp
         src/requirements.cpp
         src/schema.cpp
         src/settings.cpp
@@ -61,6 +62,7 @@ if (BUILD_TESTS)
             tests/options_test.cpp
             tests/sales_test.cpp
             tests/prices_test.cpp
+            tests/report_test.cpp
             tests/requirements_test.cpp
             tests/returns_test.cpp
             tests/schema_test.cpp
