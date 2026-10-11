@@ -1,5 +1,6 @@
 'use strict';
 
+const VAT_RATES = [0, 5, 7, 10, 20, 22];
 const KINDS = {product: 'Продукция', semi: 'Полуфабрикат', raw: 'Сырьё'};
 const UNITS = {kg: 'кг', l: 'л', pcs: 'шт'};
 
@@ -90,6 +91,58 @@ function formatMoney(kop) {
     const abs = Math.abs(kop);
     const rub = Math.trunc(abs / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0');
     return `${sign}${rub},${String(abs % 100).padStart(2, '0')}`;
+}
+
+/** Склонение по числу: plural(21, ['рубль', 'рубля', 'рублей']) -> 'рубль'. */
+function plural(n, forms) {
+    const n10 = n % 10;
+    const n100 = n % 100;
+    if (n10 === 1 && n100 !== 11) {
+        return forms[0];
+    }
+    if (n10 >= 2 && n10 <= 4 && (n100 < 10 || n100 >= 20)) {
+        return forms[1];
+    }
+    return forms[2];
+}
+
+/**
+ * Сумма прописью для печатных форм: 124800 -> "Одна тысяча двести сорок восемь рублей 00 копеек".
+ */
+function moneyInWords(kop) {
+    const ones = [['', 'один', 'два', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять'],
+        ['', 'одна', 'две', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять']];
+    const teens = ['десять', 'одиннадцать', 'двенадцать', 'тринадцать', 'четырнадцать', 'пятнадцать', 'шестнадцать',
+        'семнадцать', 'восемнадцать', 'девятнадцать'];
+    const tens = ['', '', 'двадцать', 'тридцать', 'сорок', 'пятьдесят', 'шестьдесят', 'семьдесят', 'восемьдесят', 'девяносто'];
+    const hundreds = ['', 'сто', 'двести', 'триста', 'четыреста', 'пятьсот', 'шестьсот', 'семьсот', 'восемьсот', 'девятьсот'];
+    // разряды: [формы, женский род]
+    const scales = [[['', '', ''], 0], [['тысяча', 'тысячи', 'тысяч'], 1], [['миллион', 'миллиона', 'миллионов'], 0],
+        [['миллиард', 'миллиарда', 'миллиардов'], 0]];
+    const triple = (n, female) => {
+        const words = [hundreds[Math.floor(n / 100)]];
+        const rest = n % 100;
+        if (rest >= 10 && rest < 20) {
+            words.push(teens[rest - 10]);
+        } else {
+            words.push(tens[Math.floor(rest / 10)], ones[female][rest % 10]);
+        }
+        return words.filter(Boolean).join(' ');
+    };
+    let rub = Math.floor(Math.abs(kop) / 100);
+    const k = Math.abs(kop) % 100;
+    const parts = [];
+    for (let i = 0; rub > 0 && i < scales.length; i++, rub = Math.floor(rub / 1000)) {
+        const n = rub % 1000;
+        if (n) {
+            const [forms, female] = scales[i];
+            parts.unshift([triple(n, i === 0 ? 0 : female), plural(n, forms)].filter(Boolean).join(' '));
+        }
+    }
+    const rubles = Math.floor(Math.abs(kop) / 100);
+    let text = (parts.join(' ') || 'ноль') + ' ' + plural(rubles, ['рубль', 'рубля', 'рублей']);
+    text += ` ${String(k).padStart(2, '0')} ${plural(k, ['копейка', 'копейки', 'копеек'])}`;
+    return (kop < 0 ? 'минус ' : '') + text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function showMessage(text, kind = 'error') {
@@ -316,10 +369,14 @@ async function renderItem(view, id) {
     const unit = el('select', {}, options(UNITS, item.unit));
     const archived = el('input', {type: 'checkbox', checked: item.archived});
     const group = el('select', {}, groupOptions(groups, item.group_id, '— без группы —'));
+    const vat = el('select', {},
+        el('option', {value: '', selected: item.vat_rate === null}, 'без НДС'),
+        VAT_RATES.map(r => el('option', {value: r, selected: item.vat_rate === r}, r + '%')));
 
     const save = async () => {
         if (await attempt(() => api('PUT', `items/${id}`, {
             name: name.value, kind: kind.value, unit: unit.value, archived: archived.checked, group_id: selectValue(group),
+            vat_rate: selectValue(vat),
         }), 'Сохранено')) {
             route();
         }
@@ -341,6 +398,7 @@ async function renderItem(view, id) {
             el('label', {}, 'Вид', kind),
             el('label', {}, 'Единица', unit),
             el('label', {}, 'Группа', group),
+            item.kind === 'product' ? el('label', {}, 'НДС', vat) : null,
             el('label', {class: 'check'}, archived, 'в архиве'),
             el('button', {class: 'primary', onclick: save}, 'Сохранить'),
             el('button', {class: 'danger', onclick: remove}, 'Удалить')),
@@ -917,6 +975,7 @@ async function renderDoc(view, id, params) {
                 posted ? el('button', {onclick: unpost}, 'Отменить проведение') : null,
                 cfg.fill ? el('button', {onclick: () => openFill(dateInput.value || date).catch(err => showMessage(err.message))}, 'Заполнить по заявкам') : null,
                 type === 'sale' && posted ? el('button', {onclick: () => { location.hash = `#/docs/new?type=return&base=${doc.id}`; }}, 'Оформить возврат') : null,
+                doc ? el('button', {onclick: () => window.open(`#/print/${doc.id}`, '_blank')}, 'Печать') : null,
                 doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null)),
         base ? el('p', {},
             'По ', el('a', {href: '#/docs/' + base.id}, `реализации № ${base.number} от ${humanDate(base.date).split(',')[0]}`),
@@ -1074,9 +1133,13 @@ async function renderPartner(view, id) {
     const name = el('input', {value: p.name, size: 28});
     const phone = el('input', {value: p.phone, size: 16});
     const note = el('input', {value: p.note, size: 40});
+    const inn = el('input', {value: p.inn, size: 14});
+    const kpp = el('input', {value: p.kpp, size: 11});
+    const address = el('input', {value: p.address, size: 60});
     const archived = el('input', {type: 'checkbox', checked: p.archived});
     const save = async () => {
-        if (await attempt(() => api('PUT', `partners/${id}`, {name: name.value, phone: phone.value, note: note.value, archived: archived.checked}), 'Сохранено')) {
+        const body = {name: name.value, phone: phone.value, note: note.value, inn: inn.value, kpp: kpp.value, address: address.value, archived: archived.checked};
+        if (await attempt(() => api('PUT', `partners/${id}`, body), 'Сохранено')) {
             route();
         }
     };
@@ -1091,10 +1154,141 @@ async function renderPartner(view, id) {
         el('div', {class: 'fields'},
             el('label', {}, 'Название', name),
             el('label', {}, 'Телефон', phone),
-            el('label', {}, 'Примечание', note),
+            el('label', {}, 'Примечание', note)),
+        el('h3', {}, 'Реквизиты для накладных'),
+        el('div', {class: 'fields'},
+            el('label', {}, 'ИНН', inn),
+            el('label', {}, 'КПП', kpp),
+            el('label', {}, 'Адрес', address)),
+        el('div', {class: 'fields', style: 'margin-top: 12px'},
             el('label', {class: 'check'}, archived, 'в архиве'),
             el('button', {class: 'primary', onclick: save}, 'Сохранить'),
             el('button', {class: 'danger', onclick: remove}, 'Удалить')));
+}
+
+// ---------- организация ----------
+
+const SETTINGS_FORM = [
+    ['Организация', [['org_name', 'Название', 40], ['org_inn', 'ИНН', 14], ['org_kpp', 'КПП', 11], ['org_okpo', 'ОКПО', 12],
+        ['org_address', 'Адрес', 60], ['org_phone', 'Телефон', 18]]],
+    ['Банк', [['bank_name', 'Банк', 40], ['bank_bik', 'БИК', 11], ['bank_account', 'Расчётный счёт', 24], ['bank_corr_account', 'Корр. счёт', 24]]],
+    ['Подписи в документах', [['director', 'Руководитель', 28], ['accountant', 'Главный бухгалтер', 28], ['storekeeper', 'Отпуск произвёл (кладовщик)', 28]]],
+];
+
+async function renderSettings(view) {
+    const settings = await api('GET', 'settings');
+    const inputs = {};
+    const vat = el('input', {type: 'checkbox', checked: settings.vat_payer === '1'});
+    const footer = el('input', {value: settings.doc_footer, size: 80});
+    const save = async () => {
+        const body = Object.fromEntries(Object.entries(inputs).map(([k, input]) => [k, input.value.trim()]));
+        body.vat_payer = vat.checked ? '1' : '0';
+        body.doc_footer = footer.value;
+        await attempt(() => api('PUT', 'settings', body), 'Реквизиты сохранены');
+    };
+    render(view,
+        el('div', {class: 'toolbar section-head', style: 'margin-top: 0'},
+            el('h2', {}, 'Организация'),
+            el('button', {class: 'primary', onclick: save}, 'Сохранить')),
+        el('p', {class: 'muted'}, 'Реквизиты печатаются в накладных (ТОРГ-12, УПД) и в шапке документов.'),
+        SETTINGS_FORM.map(([title, fields]) => [
+            el('h3', {}, title),
+            el('div', {class: 'fields'}, fields.map(([key, label, size]) => {
+                inputs[key] = el('input', {value: settings[key], size});
+                return el('label', {}, label, inputs[key]);
+            })),
+        ]),
+        el('h3', {}, 'НДС'),
+        el('label', {class: 'check'}, vat, 'организация - плательщик НДС (ставка указывается в карточке продукции, цены включают НДС)'),
+        el('h3', {}, 'Текст внизу печатных документов'),
+        el('div', {class: 'fields'}, el('label', {}, 'Например, условия возврата или контакты', footer)));
+}
+
+// ---------- печать ----------
+
+const DOC_SIGNATURES = {
+    order: [['Заявку принял', '']],
+    production: [['Сдал (производство)', ''], ['Принял (склад)', 'storekeeper']],
+    sale: [['Отпустил', 'storekeeper'], ['Получил', '']],
+    return: [['Сдал (покупатель)', ''], ['Принял', 'storekeeper']],
+    writeoff: [['Списал', 'storekeeper'], ['Утвердил (руководитель)', 'director']],
+    prices: [['Утвердил (руководитель)', 'director']],
+};
+
+/** Строка реквизитов: "ООО «Пекарня», ИНН 7707083893, КПП 773601001, г. Москва, тел. ...". */
+function requisitesLine(name, inn, kpp, address, phone) {
+    return [name, inn && 'ИНН ' + inn, kpp && 'КПП ' + kpp, address, phone && 'тел. ' + phone].filter(Boolean).join(', ');
+}
+
+/**
+ * Печатная форма документа: шапка с реквизитами, таблица, итоги, сумма прописью, подписи.
+ */
+async function renderPrint(view, id) {
+    const [doc, settings, items] = await Promise.all([api('GET', `docs/${id}`), api('GET', 'settings'), api('GET', 'items?kind=product&archived=1')]);
+    const cfg = DOC_TYPES[doc.type];
+    const partner = doc.partner_id ? await api('GET', `partners/${doc.partner_id}`) : null;
+    const base = doc.base_id ? await api('GET', `docs/${doc.base_id}`) : null;
+    const cols = cfg.columns;
+    const withSum = cols.qty && cols.price;
+    const withCost = cols.cost && !withSum;
+    const vatPayer = settings.vat_payer === '1';
+    const vatOf = new Map(items.map(i => [i.id, i.vat_rate]));
+    const when = humanDate(doc.date).split(',')[0] + (cfg.time === false ? '' : ' ' + doc.time);
+
+    let total = 0;
+    let vatTotal = 0;
+    const rows = doc.lines.map((l, i) => {
+        const sum = withSum && l.price_kop !== null ? lineSum(l.qty, l.price_kop) : withCost && l.cost_kop !== null ? lineSum(l.qty, l.cost_kop) : null;
+        const rate = vatOf.get(l.item_id);
+        const vat = withSum && vatPayer && rate && sum !== null ? Math.round(sum * rate / (100 + rate)) : null;
+        total += sum || 0;
+        vatTotal += vat || 0;
+        return el('tr', {},
+            el('td', {class: 'num'}, i + 1),
+            el('td', {}, l.name),
+            el('td', {}, UNITS[l.unit]),
+            cols.qty ? el('td', {class: 'num'}, formatQty(l.qty)) : null,
+            withSum ? el('td', {class: 'num'}, l.price_kop === null ? '' : formatMoney(l.price_kop)) : null,
+            withCost ? el('td', {class: 'num'}, l.cost_kop === null ? '' : formatMoney(l.cost_kop)) : null,
+            !cols.qty && cols.price ? el('td', {class: 'num'}, formatMoney(l.price_kop)) : null,
+            withSum && vatPayer ? el('td', {class: 'num'}, rate ? rate + '%' : 'без НДС') : null,
+            withSum && vatPayer ? el('td', {class: 'num'}, vat === null ? '' : formatMoney(vat)) : null,
+            sum !== null || withSum || withCost ? el('td', {class: 'num'}, sum === null ? '' : formatMoney(sum)) : null);
+    });
+    const money = withSum || withCost;
+    const sumTitle = withCost ? 'Сумма по себестоимости' : 'Сумма';
+
+    render(view,
+        el('div', {class: 'toolbar no-print'},
+            el('button', {class: 'primary', onclick: () => window.print()}, 'Печать'),
+            el('button', {onclick: () => { location.hash = '#/docs/' + doc.id; }}, 'К документу')),
+        el('div', {class: 'print-sheet'},
+            el('p', {class: 'print-org'}, requisitesLine(settings.org_name || 'Организация не указана (раздел «Организация»)',
+                settings.org_inn, settings.org_kpp, settings.org_address, settings.org_phone)),
+            el('h2', {class: 'print-title'}, `${cfg.title} № ${doc.number} от ${when}`),
+            partner ? el('p', {}, (doc.type === 'order' ? 'От кого: ' : doc.type === 'return' ? 'Покупатель: ' : 'Покупатель: ') +
+                requisitesLine(partner.name, partner.inn, partner.kpp, partner.address, partner.phone)) : null,
+            base ? el('p', {}, `Основание: реализация № ${base.number} от ${humanDate(base.date).split(',')[0]}`) : null,
+            doc.comment ? el('p', {}, (cfg.comment === 'Причина' ? 'Причина: ' : 'Комментарий: ') + doc.comment) : null,
+            el('table', {class: 'print-table'},
+                el('thead', {}, el('tr', {},
+                    el('th', {class: 'num'}, '№'),
+                    el('th', {}, 'Наименование'),
+                    el('th', {}, 'Ед.'),
+                    cols.qty ? el('th', {class: 'num'}, 'Количество') : null,
+                    withSum ? el('th', {class: 'num'}, 'Цена, ₽') : null,
+                    withCost ? el('th', {class: 'num'}, 'Себестоимость, ₽') : null,
+                    !cols.qty && cols.price ? el('th', {class: 'num'}, 'Цена, ₽') : null,
+                    withSum && vatPayer ? el('th', {class: 'num'}, 'Ставка НДС') : null,
+                    withSum && vatPayer ? el('th', {class: 'num'}, 'в т.ч. НДС, ₽') : null,
+                    money ? el('th', {class: 'num'}, sumTitle + ', ₽') : null)),
+                el('tbody', {}, rows)),
+            money ? el('p', {class: 'print-total'},
+                `Итого: ${formatMoney(total)} ₽` + (withSum ? (vatPayer ? `, в т.ч. НДС ${formatMoney(vatTotal)} ₽` : ', без НДС') : '')) : null,
+            money ? el('p', {}, `Всего наименований ${doc.lines.length}, на сумму ${moneyInWords(total)}`) : null,
+            el('div', {class: 'print-signs'}, (DOC_SIGNATURES[doc.type] || []).map(([role, key]) =>
+                el('div', {}, `${role} ____________________ ${key && settings[key] ? '/' + settings[key] + '/' : '/____________/'}`))),
+            settings.doc_footer ? el('p', {class: 'muted'}, settings.doc_footer) : null));
 }
 
 // ---------- остатки ----------
@@ -1168,6 +1362,7 @@ async function route() {
     const [hash, query] = (location.hash || '#/items').split('?');
     const params = new URLSearchParams(query || '');
     const section = {requirements: 'orders'}[hash.split('/')[1]] || hash.split('/')[1];
+    document.body.classList.toggle('print-page', section === 'print');
     for (const a of document.querySelectorAll('nav a[data-section]')) {
         a.classList.toggle('active', a.dataset.section === section);
     }
@@ -1186,6 +1381,10 @@ async function route() {
             await renderDoc(view, null, params);
         } else if (hash === '#/docs') {
             await renderDocs(view, params);
+        } else if ((m = hash.match(/^#\/print\/(\d+)$/))) {
+            await renderPrint(view, Number(m[1]));
+        } else if (hash === '#/settings') {
+            await renderSettings(view);
         } else if (hash === '#/partners') {
             await renderPartners(view);
         } else if ((m = hash.match(/^#\/partners\/(\d+)$/))) {

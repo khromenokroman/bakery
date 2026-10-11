@@ -1,6 +1,7 @@
 #include "partners.hpp"
 
 #include "errors.hpp"
+#include "settings.hpp"
 
 namespace {
 
@@ -22,6 +23,9 @@ Partner read(Statement const &stmt) {
     p.phone = stmt.column_text(2);
     p.note = stmt.column_text(3);
     p.archived = stmt.column_int(4) != 0;
+    p.inn = stmt.column_text(5);
+    p.kpp = stmt.column_text(6);
+    p.address = stmt.column_text(7);
     return p;
 }
 
@@ -30,7 +34,7 @@ Partner read(Statement const &stmt) {
 Partners::Partners(Database &db) : m_db{db} {}
 
 std::vector<Partner> Partners::list(bool with_archived) const {
-    auto stmt = m_db.prepare("SELECT id, name, phone, note, archived FROM partners WHERE ? OR archived = 0 ORDER BY name");
+    auto stmt = m_db.prepare("SELECT id, name, phone, note, archived, inn, kpp, address FROM partners WHERE ? OR archived = 0 ORDER BY name");
     stmt.bind(1, static_cast<std::int64_t>(with_archived));
     std::vector<Partner> out;
     while (stmt.step()) {
@@ -40,7 +44,7 @@ std::vector<Partner> Partners::list(bool with_archived) const {
 }
 
 Partner Partners::get(std::int64_t id) const {
-    auto stmt = m_db.prepare("SELECT id, name, phone, note, archived FROM partners WHERE id = ?");
+    auto stmt = m_db.prepare("SELECT id, name, phone, note, archived, inn, kpp, address FROM partners WHERE id = ?");
     stmt.bind(1, id);
     if (!stmt.step()) {
         throw NotFoundError("нет клиента с id " + std::to_string(id));
@@ -51,8 +55,14 @@ Partner Partners::get(std::int64_t id) const {
 std::int64_t Partners::create(Partner const &partner) {
     Transaction tx{m_db};
     auto const p = clean(partner);
-    auto stmt = m_db.prepare("INSERT INTO partners (name, phone, note, archived) VALUES (?, ?, ?, ?)");
-    stmt.bind(1, p.name).bind(2, p.phone).bind(3, p.note).bind(4, static_cast<std::int64_t>(p.archived));
+    auto stmt = m_db.prepare("INSERT INTO partners (name, phone, note, archived, inn, kpp, address) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    stmt.bind(1, p.name)
+        .bind(2, p.phone)
+        .bind(3, p.note)
+        .bind(4, static_cast<std::int64_t>(p.archived))
+        .bind(5, p.inn)
+        .bind(6, p.kpp)
+        .bind(7, p.address);
     stmt.step();
     auto const id = m_db.last_insert_id();
     tx.commit();
@@ -63,8 +73,15 @@ void Partners::update(Partner const &partner) {
     Transaction tx{m_db};
     (void)get(partner.id);
     auto const p = clean(partner);
-    auto stmt = m_db.prepare("UPDATE partners SET name = ?, phone = ?, note = ?, archived = ? WHERE id = ?");
-    stmt.bind(1, p.name).bind(2, p.phone).bind(3, p.note).bind(4, static_cast<std::int64_t>(p.archived)).bind(5, p.id);
+    auto stmt = m_db.prepare("UPDATE partners SET name = ?, phone = ?, note = ?, archived = ?, inn = ?, kpp = ?, address = ? WHERE id = ?");
+    stmt.bind(1, p.name)
+        .bind(2, p.phone)
+        .bind(3, p.note)
+        .bind(4, static_cast<std::int64_t>(p.archived))
+        .bind(5, p.inn)
+        .bind(6, p.kpp)
+        .bind(7, p.address)
+        .bind(8, p.id);
     stmt.step();
     tx.commit();
 }
@@ -89,6 +106,14 @@ Partner Partners::clean(Partner const &partner) const {
     p.name = trim(p.name);
     p.phone = trim(p.phone);
     p.note = trim(p.note);
+    p.inn = trim(p.inn);
+    p.kpp = trim(p.kpp);
+    p.address = trim(p.address);
+    check_inn(p.inn);
+    check_kpp(p.kpp);
+    if (p.address.size() > MAX_TEXT) {
+        throw UserError("слишком длинный адрес клиента");
+    }
     if (p.name.empty()) {
         throw UserError("название клиента не может быть пустым");
     }

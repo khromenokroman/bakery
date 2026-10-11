@@ -85,6 +85,13 @@ PAGES=(
     "docs/new?type=return&base=$SALE2"
     "docs/$WO"
     "docs/new?type=writeoff"
+    "settings"
+    "print/$SALE2"
+    "print/$WO"
+    "print/$PR"
+    "print/$O1"
+    "print/$RET"
+    "print/$P1"
 )
 
 failed=0
@@ -94,7 +101,7 @@ for page in "${PAGES[@]}"; do
     main=$(tr -d '\n' <<<"$dom" | grep -o '<main.*</main>' || true)
     message=$(grep -oE '<div id="message"[^>]*>[^<]*' <<<"$dom" || true)
     problems=()
-    grep -q '<h2>' <<<"$main" || problems+=("страница не нарисована (нет <h2>)")
+    grep -q '<h2' <<<"$main" || problems+=("страница не нарисована (нет <h2>)")
     grep -q 'hidden' <<<"$message" || problems+=("показана ошибка: ${message#*>}")
     grep -qE '>[^<]*null[^<]*<' <<<"$main" && problems+=("в тексте есть null")
     if [ ${#problems[@]} -eq 0 ]; then

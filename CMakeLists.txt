@@ -35,6 +35,7 @@ add_library(${PROJECT_NAME}-core STATIC
         src/prices.cpp
         src/requirements.cpp
         src/schema.cpp
+        src/settings.cpp
         src/stock.cpp
 )
 target_include_directories(${PROJECT_NAME}-core PUBLIC src)
@@ -63,6 +64,7 @@ if (BUILD_TESTS)
             tests/requirements_test.cpp
             tests/returns_test.cpp
             tests/schema_test.cpp
+            tests/settings_test.cpp
             tests/stock_test.cpp
     )
     target_link_libraries(${PROJECT_NAME}-tests PRIVATE ${PROJECT_NAME}-core GTest::gtest_main GTest::gmock)

@@ -515,3 +515,28 @@ TEST(ApiDocs, Time) {
     EXPECT_EQ(r.status, 400);
     EXPECT_THAT(r.body.value("error", ""), HasSubstr("неверное время"));
 }
+
+/**
+ * @brief Настройки и реквизиты через API.
+ */
+TEST(ApiSettings, Requisites) {
+    TestServer srv;
+    auto r = CALL(srv, "GET", "/api/settings");
+    EXPECT_EQ(r.body.at("org_name"), "") << r.body;
+    r = CALL(srv, "PUT", "/api/settings", {{"org_name", "ООО «Пекарня»"}, {"vat_payer", "1"}});
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_EQ(r.body.at("vat_payer"), "1");
+    r = CALL(srv, "PUT", "/api/settings", {{"org_inn", 7707083893}});
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("должна быть строкой"));
+
+    r = CALL(srv, "POST", "/api/items", {{"name", "Хлеб"}, {"kind", "product"}, {"unit", "pcs"}, {"vat_rate", 10}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    EXPECT_EQ(r.body.at("vat_rate"), 10);
+    r = CALL(srv, "PUT", "/api/items/" + r.body.at("id").dump(), {{"vat_rate", nullptr}});
+    EXPECT_TRUE(r.body.at("vat_rate").is_null()) << r.body;
+
+    r = CALL(srv, "POST", "/api/partners", {{"name", "Колосок"}, {"inn", "7707083893"}, {"kpp", "773601001"}, {"address", "Москва"}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    EXPECT_EQ(r.body.at("kpp"), "773601001");
+}

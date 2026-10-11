@@ -8,7 +8,7 @@
 namespace {
 
 /// Миграции схемы. Применённую миграцию не менять: изменения только новой миграцией в конце.
-constexpr std::array<std::string_view, 6> MIGRATIONS = {
+constexpr std::array<std::string_view, 7> MIGRATIONS = {
     // 1: справочники, документы, движения склада
     R"sql(
 CREATE TABLE items (
@@ -146,6 +146,17 @@ CREATE INDEX docs_base ON docs (base_id);
     R"sql(
 UPDATE docs SET date = date || ' 00:00:00' WHERE length(date) = 10;
 UPDATE stock_moves SET date = date || ' 00:00:00' WHERE length(date) = 10;
+)sql",
+    // 7: реквизиты организации (ключ-значение), реквизиты клиентов, ставка НДС товара (NULL - без НДС)
+    R"sql(
+CREATE TABLE settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+ALTER TABLE partners ADD COLUMN inn TEXT NOT NULL DEFAULT '';
+ALTER TABLE partners ADD COLUMN kpp TEXT NOT NULL DEFAULT '';
+ALTER TABLE partners ADD COLUMN address TEXT NOT NULL DEFAULT '';
+ALTER TABLE items ADD COLUMN vat_rate INTEGER CHECK (vat_rate IN (0, 5, 7, 10, 20, 22));
 )sql",
 };
 

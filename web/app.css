@@ -419,6 +419,44 @@ aside.groups .panel label {
     margin: 4px 0;
 }
 
+body.print-page header, body.print-page footer {
+    display: none;
+}
+
+.print-sheet {
+    max-width: 900px;
+    background: #fff;
+    color: #000;
+    padding: 16px;
+}
+
+.print-org {
+    font-size: 13px;
+}
+
+.print-title {
+    text-align: center;
+    margin: 16px 0;
+}
+
+table.print-table th, table.print-table td {
+    border: 1px solid #555;
+    padding: 4px 6px;
+    color: #000;
+}
+
+.print-total {
+    text-align: right;
+    font-weight: 600;
+}
+
+.print-signs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 48px;
+    margin-top: 32px;
+}
+
 @media print {
     .no-print, #message {
         display: none !important;
@@ -431,6 +469,11 @@ aside.groups .panel label {
 
     main {
         padding: 0;
+    }
+
+    .print-sheet {
+        padding: 0;
+        max-width: none;
     }
 
     .muted {

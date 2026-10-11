@@ -12,6 +12,9 @@ struct Partner {
     std::string name;
     std::string phone;
     std::string note;
+    std::string inn;
+    std::string kpp;
+    std::string address;
     std::int64_t id{};
     bool archived = false;
 };

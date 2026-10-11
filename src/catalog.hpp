@@ -39,6 +39,7 @@ enum class Unit : std::uint8_t {
 struct Item {
     std::string name;
     std::optional<std::int64_t> group_id; ///< пустой - без группы
+    std::optional<int> vat_rate;          ///< ставка НДС, %; пустая - без НДС
     std::int64_t id{};
     Kind kind = Kind::RAW;
     Unit unit = Unit::KG;

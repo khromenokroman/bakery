@@ -20,6 +20,7 @@ SCENARIOS=(
     "prices.js|#/prices"
     "sale.js|#/docs"
     "return_writeoff.js|#/docs"
+    "settings_print.js|#/docs"
 )
 
 failed=0

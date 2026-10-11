@@ -12,6 +12,7 @@
 #include "json_io.hpp"
 #include "requirements.hpp"
 #include "schema.hpp"
+#include "settings.hpp"
 
 namespace {
 
@@ -91,6 +92,22 @@ void Api::register_routes(httplib::Server &server) {
     register_prices(server);
     register_partners(server);
 
+    server.Get("/api/settings", guarded([this](httplib::Request const &, httplib::Response &res) { send_json(res, Settings{m_db}.all()); }));
+    server.Put("/api/settings", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   std::map<std::string, std::string> values;
+                   // items() ссылается на объект: временный из parse_object уничтожился бы до цикла
+                   auto const body = parse_object(req.body);
+                   for (auto const &[key, value] : body.items()) {
+                       if (!value.is_string()) {
+                           throw UserError("настройка " + key + " должна быть строкой");
+                       }
+                       values[key] = value.get<std::string>();
+                   }
+                   Settings settings{m_db};
+                   settings.update(values);
+                   send_json(res, settings.all());
+               }));
+
     if (!m_web_dir.empty() && !server.set_mount_point("/", m_web_dir)) {
         throw std::runtime_error("каталог веб-интерфейса не найден: " + m_web_dir);
     }
@@ -136,6 +153,7 @@ void Api::register_catalog(httplib::Server &server) {
                     item.kind = kind_from_string(get_string(j, "kind"));
                     item.unit = unit_from_string(get_string(j, "unit"));
                     item.group_id = get_optional_id(j, "group_id", std::nullopt);
+                    item = item_from_json(j, item);
                     auto const id = m_catalog.create(item);
                     send_json(res, to_json(m_catalog.get(id)), 201);
                 }));

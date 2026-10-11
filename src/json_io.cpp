@@ -61,6 +61,7 @@ nlohmann::json to_json(Item const &item) {
         {"archived", item.archived},
         {"has_recipe", item.has_recipe},
         {"group_id", item.group_id ? nlohmann::json(*item.group_id) : nlohmann::json(nullptr)},
+        {"vat_rate", item.vat_rate ? nlohmann::json(*item.vat_rate) : nlohmann::json(nullptr)},
     };
 }
 
@@ -92,6 +93,10 @@ Item item_from_json(nlohmann::json const &j, Item base) {
         base.archived = *archived;
     }
     base.group_id = get_optional_id(j, "group_id", base.group_id);
+    if (j.contains("vat_rate")) {
+        auto const rate = get_optional_id(j, "vat_rate", std::nullopt);
+        base.vat_rate = rate ? std::optional<int>(static_cast<int>(*rate)) : std::nullopt;
+    }
     return base;
 }
 
@@ -251,7 +256,8 @@ nlohmann::json to_json(PriceRow const &row) {
 
 nlohmann::json to_json(Partner const &partner) {
     return {
-        {"id", partner.id}, {"name", partner.name}, {"phone", partner.phone}, {"note", partner.note}, {"archived", partner.archived},
+        {"id", partner.id},   {"name", partner.name}, {"phone", partner.phone},     {"note", partner.note}, {"archived", partner.archived},
+        {"inn", partner.inn}, {"kpp", partner.kpp},   {"address", partner.address},
     };
 }
 
@@ -264,6 +270,11 @@ Partner partner_from_json(nlohmann::json const &j, Partner base) {
     }
     if (j.contains("note")) {
         base.note = get_string(j, "note");
+    }
+    for (auto const &[key, field] : {std::pair{"inn", &Partner::inn}, std::pair{"kpp", &Partner::kpp}, std::pair{"address", &Partner::address}}) {
+        if (j.contains(key)) {
+            base.*field = get_string(j, key);
+        }
     }
     if (auto const archived = get_bool(j, "archived")) {
         base.archived = *archived;

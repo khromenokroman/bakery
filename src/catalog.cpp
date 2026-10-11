@@ -73,11 +73,21 @@ Item read_item(Statement const &stmt) {
     if (!stmt.column_is_null(6)) {
         item.group_id = stmt.column_int(6);
     }
+    if (!stmt.column_is_null(7)) {
+        item.vat_rate = static_cast<int>(stmt.column_int(7));
+    }
     return item;
 }
 
 constexpr char const SELECT_ITEM[] =
-    "SELECT i.id, i.name, i.kind, i.unit, i.archived, r.item_id IS NOT NULL, i.group_id FROM items i LEFT JOIN recipes r ON r.item_id = i.id ";
+    "SELECT i.id, i.name, i.kind, i.unit, i.archived, r.item_id IS NOT NULL, i.group_id, i.vat_rate FROM items i LEFT JOIN recipes r ON r.item_id = "
+    "i.id ";
+
+void check_vat(std::optional<int> rate) {
+    if (rate && *rate != 0 && *rate != 5 && *rate != 7 && *rate != 10 && *rate != 20 && *rate != 22) {
+        throw UserError("ставка НДС " + std::to_string(*rate) + "%: допустимы 0, 5, 7, 10, 20, 22 или без НДС");
+    }
+}
 
 void bind_group(Statement &stmt, int index, std::optional<std::int64_t> group) {
     if (group) {
@@ -168,9 +178,13 @@ std::int64_t Catalog::create(Item const &item) {
         throw UserError("позиция «" + name + "» уже есть");
     }
     check_group(item.group_id);
-    auto stmt = m_db.prepare("INSERT INTO items (name, kind, unit, archived, group_id) VALUES (?, ?, ?, ?, ?)");
+    check_vat(item.vat_rate);
+    auto stmt = m_db.prepare("INSERT INTO items (name, kind, unit, archived, group_id, vat_rate) VALUES (?, ?, ?, ?, ?, ?)");
     stmt.bind(1, name).bind(2, to_string(item.kind)).bind(3, to_string(item.unit)).bind(4, static_cast<std::int64_t>(item.archived));
     bind_group(stmt, 5, item.group_id);
+    if (item.vat_rate) {
+        stmt.bind(6, *item.vat_rate);
+    }
     stmt.step();
     auto const id = m_db.last_insert_id();
     tx.commit();
@@ -205,10 +219,16 @@ void Catalog::update(Item const &item) {
     }
 
     check_group(item.group_id);
-    auto stmt = m_db.prepare("UPDATE items SET name = ?, kind = ?, unit = ?, archived = ?, group_id = ? WHERE id = ?");
+    check_vat(item.vat_rate);
+    auto stmt = m_db.prepare("UPDATE items SET name = ?, kind = ?, unit = ?, archived = ?, group_id = ?, vat_rate = ? WHERE id = ?");
     stmt.bind(1, name).bind(2, to_string(item.kind)).bind(3, to_string(item.unit)).bind(4, static_cast<std::int64_t>(item.archived));
     bind_group(stmt, 5, item.group_id);
-    stmt.bind(6, item.id);
+    if (item.vat_rate) {
+        stmt.bind(6, *item.vat_rate);
+    } else {
+        stmt.bind_null(6);
+    }
+    stmt.bind(7, item.id);
     stmt.step();
     tx.commit();
 }
