@@ -42,6 +42,14 @@ function el(tag, attrs, ...children) {
     return node;
 }
 
+/**
+ * Заменяет содержимое view; null, undefined и false пропускаются, как в el().
+ * replaceChildren сам вставил бы их текстом "null".
+ */
+function render(view, ...children) {
+    render(view,...children.flat().filter(c => c !== null && c !== undefined && c !== false));
+}
+
 function options(map, selected) {
     return Object.entries(map).map(([value, text]) => el('option', {value, selected: value === selected}, text));
 }
@@ -136,7 +144,7 @@ async function renderItems(view) {
         el('td', {}, UNITS[item.unit]),
         el('td', {}, item.kind === 'raw' ? '' : item.has_recipe ? 'есть' : el('span', {class: 'muted'}, 'нет'))));
 
-    view.replaceChildren(
+    render(view,
         el('h2', {}, 'Номенклатура'),
         form,
         el('div', {style: 'height: 16px'}),
@@ -176,7 +184,7 @@ async function renderItem(view, id) {
         }
     };
 
-    view.replaceChildren(
+    render(view,
         el('a', {class: 'back', href: '#/items'}, '← Номенклатура'),
         el('h2', {}, item.name),
         el('div', {class: 'fields'},
@@ -336,7 +344,7 @@ async function renderOrders(view, params) {
         location.hash = `#/requirements?date=${date}&docs=${ids.join(',')}`;
     };
 
-    view.replaceChildren(
+    render(view,
         el('h2', {}, 'Заявки'),
         el('div', {class: 'toolbar'},
             el('button', {title: 'Предыдущий день', onclick: () => go(shiftDate(date, -1))}, '←'),
@@ -424,7 +432,7 @@ async function renderOrder(view, id, params) {
         }
     };
 
-    view.replaceChildren(
+    render(view,
         el('a', {class: 'back', href: '#/orders?date=' + date}, '← Заявки'),
         el('h2', {}, doc ? `Заявка № ${doc.number}` : 'Новая заявка'),
         el('div', {class: 'fields'},
@@ -463,7 +471,7 @@ async function renderRequirements(view, params) {
         api('GET', 'requirements?docs=' + encodeURIComponent(docs)),
         Promise.all(docs.split(',').filter(Boolean).map(id => api('GET', 'docs/' + id))),
     ]);
-    view.replaceChildren(
+    render(view,
         el('a', {class: 'back no-print', href: '#/orders' + (date ? '?date=' + date : '')}, '← Заявки'),
         el('h2', {}, 'Потребность' + (date ? ' на ' + humanDate(date) : '')),
         el('p', {class: 'muted'}, 'Заявки: ' + orders.map(o => `№ ${o.number}${o.comment ? ' (' + o.comment + ')' : ''}`).join(', ')),
