@@ -51,10 +51,10 @@ class Prices {
     /// @throws UserError встроенный тип или есть документы с этим типом; NotFoundError
     void remove_type(std::int64_t id);
 
-    /// Цена позиции по типу на конец дня date; nullopt, если цены нет.
-    [[nodiscard]] std::optional<std::int64_t> price(std::int64_t type_id, std::int64_t item_id, std::string const &date) const;
+    /// Цена позиции по типу на момент "ГГГГ-ММ-ДД ЧЧ:ММ:СС" (одна дата - конец дня); nullopt, если цены нет.
+    [[nodiscard]] std::optional<std::int64_t> price(std::int64_t type_id, std::int64_t item_id, std::string const &moment) const;
 
-    /// Все позиции с действующей на date ценой этого типа, по названию.
+    /// Все позиции с действующей ценой этого типа на момент (одна дата ГГГГ-ММ-ДД - конец дня), по названию.
     [[nodiscard]] std::vector<PriceRow> price_list(std::int64_t type_id, std::string const &date) const;
 
    private:

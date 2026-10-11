@@ -123,3 +123,20 @@ TEST(Schema, Migration3KeepsDocuments) {
         EXPECT_THAT(std::string(e.what()), HasSubstr("FOREIGN KEY"));
     }
 }
+
+/**
+ * @brief Миграция 6 дописывает старым датам документов и движений время 00:00:00.
+ */
+TEST(Schema, Migration6AddsTime) {
+    Database db{":memory:"};
+    ASSERT_EQ(migrate(db, 5), 5);
+    db.exec(
+        "INSERT INTO items (id, name, kind, unit) VALUES (1, 'Батон', 'product', 'pcs');"
+        "INSERT INTO docs (id, type, number, date, status) VALUES (7, 'production', 1, '2026-10-12', 'posted');"
+        "INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (7, 1, 40000, '2026-10-12');");
+    migrate(db);
+    auto stmt = db.prepare("SELECT d.date, m.date FROM docs d JOIN stock_moves m ON m.doc_id = d.id");
+    ASSERT_TRUE(stmt.step());
+    EXPECT_EQ(stmt.column_text(0), "2026-10-12 00:00:00");
+    EXPECT_EQ(stmt.column_text(1), "2026-10-12 00:00:00");
+}

@@ -37,7 +37,7 @@ class StockTest : public DbFixture {
     void fake_sale(std::string const &date, std::int64_t item, std::int64_t qty) {
         auto const doc = m_docs.create(make_order(date, {{item, qty}}));
         auto stmt = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (?, ?, ?, ?)");
-        stmt.bind(1, doc).bind(2, item).bind(3, -qty).bind(4, date);
+        stmt.bind(1, doc).bind(2, item).bind(3, -qty).bind(4, date + " 00:00:00");
         stmt.step();
     }
 
@@ -224,4 +224,47 @@ TEST_F(StockTest, RepostChecksRemovedItemsAndDate) {
     earlier.id = id;
     m_docs.update(earlier);
     EXPECT_THAT(balances("2026-10-11"), StrEq("Батон=10000; ")) << "дата движений перенесена вместе с документом";
+}
+
+/**
+ * @brief Остаток проверяется по моменту: списание в 09:00 при поступлении в 10:00 того же дня не проходит,
+ * в 11:00 проходит.
+ */
+TEST_F(StockTest, CheckedByTimeWithinDay) {
+    auto prod = make_doc(DocType::PRODUCTION, "2026-10-12", {{m_bread, 10000}});
+    prod.time = "10:00";
+    m_docs.post(m_docs.create(prod));
+
+    auto early = make_doc(DocType::WRITEOFF, "2026-10-12", {{m_bread, 5000}}, "брак");
+    early.time = "09:00";
+    EXPECT_THROW_REASON(m_docs.post(m_docs.create(early)), UserError, "«Батон»: остаток на 12.10.2026 09:00 уйдёт в минус, не хватает 5 шт");
+
+    auto later = early;
+    later.time = "11:00";
+    EXPECT_NO_THROW(m_docs.post(m_docs.create(later)));
+    EXPECT_THAT(balances("2026-10-12"), StrEq("Батон=5000; "));
+}
+
+/**
+ * @brief Время: формат ЧЧ:ММ и ЧЧ:ММ:СС, проверка значений, список документов по моменту.
+ */
+TEST_F(StockTest, TimeFormatAndOrder) {
+    EXPECT_THAT(normalize_time("09:30"), StrEq("09:30:00"));
+    EXPECT_THAT(normalize_time("23:59:59"), StrEq("23:59:59"));
+    EXPECT_THROW_REASON((void)normalize_time("24:00"), UserError, "неверное время «24:00»");
+    EXPECT_THROW_REASON((void)normalize_time("9:30"), UserError, "нужен формат ЧЧ:ММ");
+    EXPECT_THROW_REASON((void)normalize_time("09:60"), UserError, "неверное время");
+
+    for (auto const &[time, comment] : {std::pair{"15:00", "c"}, std::pair{"08:00", "a"}, std::pair{"12:30", "b"}}) {
+        auto d = make_doc(DocType::PRODUCTION, "2026-10-12", {{m_bread, 1000}}, comment);
+        d.time = time;
+        m_docs.create(d);
+    }
+    std::string order;
+    for (auto const &d : m_docs.list({})) {
+        order += d.comment + d.time.substr(0, 5) + " ";
+    }
+    EXPECT_THAT(order, StrEq("a08:00 b12:30 c15:00 ")) << "документы одного дня по времени, а не по номеру";
+    EXPECT_THAT(ru_moment("2026-10-12 09:05:00"), StrEq("12.10.2026 09:05"));
+    EXPECT_THAT(ru_moment("2026-10-12 00:00:00"), StrEq("12.10.2026")) << "без времени для старых документов";
 }

@@ -123,6 +123,10 @@ th {
     font-size: 13px;
 }
 
+td.nowrap {
+    white-space: nowrap;
+}
+
 td.num, th.num {
     text-align: right;
 }

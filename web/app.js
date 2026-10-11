@@ -519,7 +519,7 @@ async function renderOrders(view, params) {
 const DOC_TYPES = {
     order: {
         title: 'Заявка', create: 'Новая заявка', comment: 'Комментарий', partner: 'От кого',
-        back: d => '#/orders?date=' + d, backTitle: '← Заявки', posting: false, fill: false,
+        back: d => '#/orders?date=' + d, backTitle: '← Заявки', posting: false, fill: false, time: false,
         columns: {qty: true},
     },
     production: {
@@ -597,9 +597,20 @@ async function renderDoc(view, id, params) {
     const returns = type === 'sale' && doc
         ? (await api('GET', `docs?type=return&from=${doc.date}`)).filter(r => r.base_id === doc.id) : [];
 
-    // новый возврат - сегодня, но не раньше реализации
+    // новый документ - сейчас; новый возврат - не раньше реализации
     const today = isoDate(new Date());
-    const dateInput = el('input', {type: 'date', value: doc ? doc.date : (cfg.returnOf ? (today < base.date ? base.date : today) : date)});
+    const now = new Date().toTimeString().slice(0, 5);
+    let initDate = doc ? doc.date : date;
+    let initTime = doc ? doc.time : now;
+    if (!doc && cfg.returnOf) {
+        initDate = today;
+        if (today < base.date || (today === base.date && now < base.time)) {
+            initDate = base.date;
+            initTime = base.time;
+        }
+    }
+    const dateInput = el('input', {type: 'date', value: initDate});
+    const timeInput = el('input', {type: 'time', value: initTime});
     const comment = el('input', {value: doc ? doc.comment : '', size: 40});
     const chosenType = doc ? doc.price_type_id : (params.get('price_type') ? Number(params.get('price_type')) : null);
     const priceType = el('select', {},
@@ -618,11 +629,12 @@ async function renderDoc(view, id, params) {
     let typed = new Map();
     const loadPrices = async () => {
         const d = dateInput.value;
+        const t = cfg.time === false || !timeInput.value ? '' : `&time=${timeInput.value}`;
         if (cols.cost && d) {
-            costs = new Map((await api('GET', `prices?type=1&date=${d}`)).map(r => [r.item_id, r.price_kop]));
+            costs = new Map((await api('GET', `prices?type=1&date=${d}${t}`)).map(r => [r.item_id, r.price_kop]));
         }
         if (cfg.typedPrices && d && priceType.value) {
-            typed = new Map((await api('GET', `prices?type=${priceType.value}&date=${d}`)).map(r => [r.item_id, r.price_kop]));
+            typed = new Map((await api('GET', `prices?type=${priceType.value}&date=${d}${t}`)).map(r => [r.item_id, r.price_kop]));
         } else {
             typed = new Map();
         }
@@ -759,6 +771,7 @@ async function renderDoc(view, id, params) {
         update();
     };
     dateInput.addEventListener('change', () => dateInput.value && reprice().catch(err => showMessage(err.message)));
+    timeInput.addEventListener('change', () => timeInput.value && reprice().catch(err => showMessage(err.message)));
     priceType.addEventListener('change', () => reprice().catch(err => showMessage(err.message)));
 
     /** Строки из таблицы; null и сообщение, если что-то не так. */
@@ -801,6 +814,9 @@ async function renderDoc(view, id, params) {
             return;
         }
         const body = {type, date: dateInput.value, comment: comment.value, lines};
+        if (cfg.time !== false) {
+            body.time = timeInput.value || '00:00';
+        }
         if (cfg.priceType) {
             body.price_type_id = selectValue(priceType);
         }
@@ -909,6 +925,7 @@ async function renderDoc(view, id, params) {
             el('a', {href: '#/docs/' + r.id}, `№ ${r.number}`), r.status === 'posted' ? '' : ' (не проведён)'])) : null,
         el('div', {class: 'fields'},
             el('label', {}, 'Дата', dateInput),
+            cfg.time === false ? null : el('label', {}, 'Время', timeInput),
             cfg.partner ? el('label', {}, cfg.partner, partner) : null,
             cfg.priceType && !cfg.returnOf ? el('label', {}, 'Тип цен', priceType) : null,
             el('label', {}, cfg.comment, comment)),
@@ -933,20 +950,20 @@ async function renderDoc(view, id, params) {
 
 // ---------- документы ----------
 
-const docsState = {from: null, to: null};
-
-async function renderDocs(view) {
+async function renderDocs(view, params) {
+    // по умолчанию неделя до и после сегодня: документы, оформленные заранее, тоже видны
     const today = isoDate(new Date());
-    const from = docsState.from || shiftDate(today, -7);
-    const to = docsState.to || today;
+    const from = params.get('from') || shiftDate(today, -7);
+    const to = params.get('to') || shiftDate(today, 7);
     const docs = await api('GET', `docs?type=production,sale,return,writeoff,prices&from=${from}&to=${to}`);
-    const fromInput = el('input', {type: 'date', value: from, onchange: e => { docsState.from = e.target.value; route(); }});
-    const toInput = el('input', {type: 'date', value: to, onchange: e => { docsState.to = e.target.value; route(); }});
+    const go = (f, t) => { location.hash = `#/docs?from=${f}&to=${t}`; };
+    const fromInput = el('input', {type: 'date', value: from, onchange: e => e.target.value && go(e.target.value, to)});
+    const toInput = el('input', {type: 'date', value: to, onchange: e => e.target.value && go(from, e.target.value)});
 
     const rows = docs.slice().reverse().map(doc => el('tr', {class: 'link', onclick: () => { location.hash = '#/docs/' + doc.id; }},
-        el('td', {}, humanDate(doc.date)),
+        el('td', {class: 'nowrap'}, humanDate(doc.date).split(',')[0] + ' ' + doc.time),
         el('td', {}, `${DOC_TYPES[doc.type].title} № ${doc.number}`),
-        el('td', {}, el('span', {class: 'status ' + doc.status}, doc.status === 'posted' ? 'проведён' : 'не проведён')),
+        el('td', {class: 'nowrap'}, el('span', {class: 'status ' + doc.status}, doc.status === 'posted' ? 'проведён' : 'не проведён')),
         el('td', {}, orderFrom(doc)),
         el('td', {}, doc.type === 'prices' ? doc.lines.map(l => l.name).join(', ') : lineSummary(doc.lines))));
 
@@ -959,7 +976,7 @@ async function renderDocs(view) {
             el('button', {onclick: () => { location.hash = '#/docs/new?type=prices'; }}, 'Новая установка цен')),
         el('div', {class: 'toolbar'}, 'с', fromInput, 'по', toInput),
         el('div', {class: 'table-wrap'}, el('table', {},
-            el('thead', {}, el('tr', {}, el('th', {}, 'Дата'), el('th', {}, 'Документ'), el('th', {}, 'Статус'), el('th', {}, 'Клиент, комментарий'), el('th', {}, 'Состав'))),
+            el('thead', {}, el('tr', {}, el('th', {}, 'Дата и время'), el('th', {}, 'Документ'), el('th', {}, 'Статус'), el('th', {}, 'Клиент, комментарий'), el('th', {}, 'Состав'))),
             el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 5, class: 'muted'}, 'За эти дни документов нет'))))));
 }
 
@@ -1168,7 +1185,7 @@ async function route() {
         } else if (hash === '#/docs/new') {
             await renderDoc(view, null, params);
         } else if (hash === '#/docs') {
-            await renderDocs(view);
+            await renderDocs(view, params);
         } else if (hash === '#/partners') {
             await renderPartners(view);
         } else if ((m = hash.match(/^#\/partners\/(\d+)$/))) {

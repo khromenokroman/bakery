@@ -42,7 +42,8 @@ struct DocLine {
  */
 struct Document {
     std::vector<DocLine> lines;
-    std::string date; ///< YYYY-MM-DD
+    std::string date;              ///< YYYY-MM-DD
+    std::string time = "00:00:00"; ///< ЧЧ:ММ:СС; вместе с датой задаёт момент документа
     std::string comment;
     std::string status = "draft";              ///< только для чтения
     std::optional<std::int64_t> price_type_id; ///< тип цен: установка цен, реализация
@@ -81,6 +82,18 @@ struct DocFilter {
  * @throws UserError
  */
 void check_date(std::string_view date);
+
+/**
+ * @brief Время "ЧЧ:ММ" или "ЧЧ:ММ:СС" в виде "ЧЧ:ММ:СС".
+ * @throws UserError
+ */
+[[nodiscard]] std::string normalize_time(std::string_view time);
+
+/// Момент документа для базы и сравнения: "ГГГГ-ММ-ДД ЧЧ:ММ:СС".
+[[nodiscard]] std::string moment(Document const &doc);
+
+/// Момент для сообщений: "12.10.2026 09:30", без времени, если оно 00:00:00.
+[[nodiscard]] std::string ru_moment(std::string const &moment);
 
 /**
  * @brief Документы: заявки (без движений), поступление из производства, реализация, возврат по реализации,

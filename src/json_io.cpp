@@ -137,6 +137,7 @@ nlohmann::json to_json(Document const &doc) {
         {"type", to_string(doc.type)},
         {"number", doc.number},
         {"date", doc.date},
+        {"time", doc.time.substr(0, 5)},
         {"status", doc.status},
         {"comment", doc.comment},
         {"price_type_id", optional_json(doc.price_type_id)},
@@ -176,6 +177,9 @@ Document document_from_json(nlohmann::json const &j) {
         doc.type = doc_type_from_string(get_string(j, "type"));
     }
     doc.date = get_string(j, "date");
+    if (j.contains("time")) {
+        doc.time = get_string(j, "time");
+    }
     doc.price_type_id = get_optional_id(j, "price_type_id", std::nullopt);
     doc.partner_id = get_optional_id(j, "partner_id", std::nullopt);
     doc.base_id = get_optional_id(j, "base_id", std::nullopt);

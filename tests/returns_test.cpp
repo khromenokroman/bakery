@@ -167,3 +167,21 @@ TEST_F(ReturnsTest, Writeoff) {
     auto const too_much = m_docs.create(make_doc(DocType::WRITEOFF, "2026-10-13", {{m_cake, 6000}}, "брак"));
     EXPECT_THROW_REASON(m_docs.post(too_much), UserError, "«Торт»: остаток на 13.10.2026 уйдёт в минус, не хватает 1 кг");
 }
+
+/**
+ * @brief Возврат в тот же день, но раньше по времени, чем реализация, отклоняется.
+ */
+TEST_F(ReturnsTest, ReturnNotBeforeSaleTime) {
+    auto sale = make_doc(DocType::SALE, "2026-10-14", {{m_bread, 1000}});
+    sale.time = "15:00";
+    sale.price_type_id = m_v1;
+    sale.lines[0].price_kop = 4500;
+    auto const id = m_docs.create(sale);
+    m_docs.post(id);
+    auto ret = make_doc(DocType::RETURN, "2026-10-14", {{m_bread, 1000}});
+    ret.base_id = id;
+    ret.time = "14:00";
+    EXPECT_THROW_REASON(m_docs.create(ret), UserError, "возврат не может быть раньше реализации");
+    ret.time = "15:30";
+    EXPECT_NO_THROW(m_docs.create(ret));
+}

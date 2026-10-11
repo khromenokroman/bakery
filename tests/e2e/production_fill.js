@@ -8,7 +8,7 @@ await sleep(500);
 const rows = [...document.querySelectorAll('tbody tr')].map(r => r.querySelector('select').selectedOptions[0].text + ' ' + r.querySelector('input').value);
 log.push('строки: ' + rows.join('; '));
 expect(rows.join('; ') === 'Батон 45; Торт 5', 'ожидались строки «Батон 45; Торт 5»');
-expect(document.querySelectorAll('.fields input')[1].value.startsWith('по заявкам № 1, 2'), 'комментарий не заполнен');
+expect([...document.querySelectorAll('.fields label')].find(l => l.textContent.startsWith("Комментарий")).querySelector('input').value.startsWith('по заявкам № 1, 2'), 'комментарий не заполнен');
 
 document.querySelector('tbody tr input').value = '44';
 btn('Сохранить и провести').click();

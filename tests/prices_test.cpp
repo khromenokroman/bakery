@@ -175,3 +175,22 @@ TEST_F(PricesTest, PriceTypeOnlyWhereNeeded) {
     order.price_type_id = m_v1;
     EXPECT_FALSE(m_docs.get(m_docs.create(order)).price_type_id);
 }
+
+/**
+ * @brief Цена действует с момента установки: реализация в 11:00 её не видит, в 13:00 видит.
+ */
+TEST_F(PricesTest, PriceFromMoment) {
+    Document d;
+    d.type = DocType::PRICES;
+    d.date = "2026-10-12";
+    d.time = "12:00";
+    d.price_type_id = m_v1;
+    DocLine l;
+    l.item_id = m_bread;
+    l.price_kop = 4500;
+    d.lines = {l};
+    m_docs.post(m_docs.create(d));
+    EXPECT_FALSE(price(m_v1, m_bread, "2026-10-12 11:00:00"));
+    EXPECT_EQ(price(m_v1, m_bread, "2026-10-12 13:00:00"), 4500);
+    EXPECT_EQ(price(m_v1, m_bread, "2026-10-12"), 4500) << "одна дата - конец дня";
+}

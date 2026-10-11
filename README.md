@@ -46,6 +46,11 @@
 отмеченные суммируются в строки документа, дальше количества правятся под фактический выпуск.
 Можно и не заполнять по заявкам, а добавить строки вручную.
 
+У складских документов и установок цен есть дата и время (у заявки только дата). Документы
+упорядочены по моменту, остаток проверяется после каждого момента: списание в 09:00 не пройдёт,
+если поступление в 10:00 того же дня. Цена действует с момента установки. Документы, созданные
+до появления времени, имеют время 00:00.
+
 Проведённый документ добавляет продукцию на склад. Его можно исправить и нажать «Сохранить
 и перепровести»: старые движения заменяются новыми в одной транзакции, и минус проверяется только по итогу.
 Например, 12-го оприходовано 40 батонов, 13-го продано 30, поступление исправляют на 35: отдельная отмена
@@ -164,7 +169,7 @@ sqlite3 bakery.db ".backup bakery-$(date +%F).db"
 
 | Метод | Ответ |
 |---|---|
-| `GET /api/version` | `{"version": "0.9.0.0", "schema": 5}` |
+| `GET /api/version` | `{"version": "0.10.0.0", "schema": 6}` |
 | `GET /api/groups` | `[{"id", "name", "parent_id"}]`, `parent_id` = `null` у верхнего уровня |
 | `POST /api/groups` `{"name", "parent_id"}` | созданная группа, код 201 |
 | `PUT /api/groups/{id}` `{"name", "parent_id"}` | переименование и перенос |
@@ -178,7 +183,7 @@ sqlite3 bakery.db ".backup bakery-$(date +%F).db"
 | `PUT /api/items/{id}/recipe` `{"output_qty", "lines": [{"component_id", "qty"}]}` | замена рецептуры целиком |
 | `DELETE /api/items/{id}/recipe` | удаление рецептуры |
 | `GET /api/docs?type=order,production&from=ГГГГ-ММ-ДД&to=ГГГГ-ММ-ДД` | документы со строками, даты включительно |
-| `POST /api/docs` `{"type", "date", "comment", "price_type_id", "lines": [{"item_id", "qty", "price_kop"}]}` | созданный документ, код 201 |
+| `POST /api/docs` `{"type", "date", "time", "comment", "price_type_id", "lines": [{"item_id", "qty", "price_kop"}]}` | созданный документ, код 201; `time` "ЧЧ:ММ", по умолчанию 00:00 |
 | `GET /api/docs/{id}` | `{"id", "type", "number", "date", "status", "comment", "lines": [{"item_id", "name", "unit", "qty"}]}` |
 | `PUT /api/docs/{id}` `{"date", "comment", "lines"}` | замена даты, комментария и строк; проведённый документ перепроводится |
 | `DELETE /api/docs/{id}` | удаление документа |
@@ -188,7 +193,7 @@ sqlite3 bakery.db ".backup bakery-$(date +%F).db"
 | `GET /api/stock?date=ГГГГ-ММ-ДД&group={id}` | `[{"item_id", "name", "unit", "qty", "archived", "group_id"}]`, ненулевые остатки на конец дня |
 | `GET /api/price-types` | `[{"id", "name", "system"}]`, `id` = 1 - встроенная себестоимость |
 | `POST /api/price-types` `{"name"}`, `PUT /api/price-types/{id}`, `DELETE /api/price-types/{id}` | типы цен |
-| `GET /api/prices?type={id}&date=ГГГГ-ММ-ДД` | `[{"item_id", "name", "unit", "price_kop", "date", "doc_id"}]`, действующие цены |
+| `GET /api/prices?type={id}&date=ГГГГ-ММ-ДД&time=ЧЧ:ММ` | `[{"item_id", "name", "unit", "price_kop", "date", "doc_id"}]`, действующие цены |
 | `GET /api/partners?archived=1` | `[{"id", "name", "phone", "note", "archived"}]` |
 | `POST /api/partners`, `GET/PUT/DELETE /api/partners/{id}` | клиенты; `PUT` меняет переданные поля |
 | `GET /api/requirements?docs=1,2,3` | `{"products", "intermediates", "raw": [{"item_id", "name", "kind", "unit", "qty", "has_recipe"}], "warnings"}` |

@@ -78,9 +78,10 @@ void Prices::remove_type(std::int64_t id) {
     tx.commit();
 }
 
-std::optional<std::int64_t> Prices::price(std::int64_t type_id, std::int64_t item_id, std::string const &date) const {
+std::optional<std::int64_t> Prices::price(std::int64_t type_id, std::int64_t item_id, std::string const &moment) const {
     auto stmt = m_db.prepare(std::string(LATEST) + " AND item_id = ?3");
-    stmt.bind(1, type_id).bind(2, date).bind(3, item_id);
+    // одна дата без времени означает конец дня
+    stmt.bind(1, type_id).bind(2, moment.size() == 10 ? moment + " 23:59:59" : moment).bind(3, item_id);
     if (!stmt.step()) {
         return std::nullopt;
     }
@@ -90,7 +91,7 @@ std::optional<std::int64_t> Prices::price(std::int64_t type_id, std::int64_t ite
 std::vector<PriceRow> Prices::price_list(std::int64_t type_id, std::string const &date) const {
     auto stmt = m_db.prepare("SELECT p.item_id, i.name, i.unit, p.price_kop, p.date, p.doc_id FROM (" + std::string(LATEST) +
                              ") p JOIN items i ON i.id = p.item_id ORDER BY i.name");
-    stmt.bind(1, type_id).bind(2, date);
+    stmt.bind(1, type_id).bind(2, date.size() == 10 ? date + " 23:59:59" : date);
     std::vector<PriceRow> out;
     while (stmt.step()) {
         PriceRow row;
@@ -98,7 +99,7 @@ std::vector<PriceRow> Prices::price_list(std::int64_t type_id, std::string const
         row.name = stmt.column_text(1);
         row.unit = unit_from_string(stmt.column_text(2));
         row.price_kop = stmt.column_int(3);
-        row.date = stmt.column_text(4);
+        row.date = stmt.column_text(4).substr(0, 10);
         row.doc_id = stmt.column_int(5);
         out.push_back(std::move(row));
     }

@@ -497,3 +497,21 @@ TEST(ApiReturns, ReturnableAndReturn) {
     EXPECT_EQ(r.status, 400);
     EXPECT_THAT(r.body.value("error", ""), HasSubstr("укажите причину списания"));
 }
+
+/**
+ * @brief Время документа в API: передаётся полем time, возвращается как ЧЧ:ММ, неверное отклоняется.
+ */
+TEST(ApiDocs, Time) {
+    TestServer srv;
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    auto r = CALL(srv, "POST", "/api/docs",
+                  {{"type", "production"}, {"date", "2026-10-12"}, {"time", "09:15"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    EXPECT_EQ(r.body.at("time"), "09:15");
+    r = CALL(srv, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-12"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}});
+    EXPECT_EQ(r.body.at("time"), "00:00") << "без времени - начало дня";
+    r = CALL(srv, "POST", "/api/docs",
+             {{"type", "production"}, {"date", "2026-10-12"}, {"time", "25:00"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}});
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("неверное время"));
+}

@@ -333,8 +333,9 @@ void Api::register_prices(httplib::Server &server) {
                    (void)m_prices.type(type);
                    auto const date = req.get_param_value("date");
                    check_date(date);
+                   auto const when = req.has_param("time") ? date + " " + normalize_time(req.get_param_value("time")) : date;
                    auto out = nlohmann::json::array();
-                   for (auto const &row : m_prices.price_list(type, date)) {
+                   for (auto const &row : m_prices.price_list(type, when)) {
                        out.push_back(to_json(row));
                    }
                    send_json(res, out);

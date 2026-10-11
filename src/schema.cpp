@@ -8,7 +8,7 @@
 namespace {
 
 /// Миграции схемы. Применённую миграцию не менять: изменения только новой миграцией в конце.
-constexpr std::array<std::string_view, 5> MIGRATIONS = {
+constexpr std::array<std::string_view, 6> MIGRATIONS = {
     // 1: справочники, документы, движения склада
     R"sql(
 CREATE TABLE items (
@@ -141,6 +141,11 @@ DROP INDEX stock_moves_item;
     R"sql(
 ALTER TABLE docs ADD COLUMN base_id INTEGER REFERENCES docs (id);
 CREATE INDEX docs_base ON docs (base_id);
+)sql",
+    // 6: дата документа и движений с временем "ГГГГ-ММ-ДД ЧЧ:ММ:СС"; у старых 00:00:00
+    R"sql(
+UPDATE docs SET date = date || ' 00:00:00' WHERE length(date) = 10;
+UPDATE stock_moves SET date = date || ' 00:00:00' WHERE length(date) = 10;
 )sql",
 };
 

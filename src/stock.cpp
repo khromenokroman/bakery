@@ -1,5 +1,6 @@
 #include "stock.hpp"
 
+#include "docs.hpp"
 #include "errors.hpp"
 
 namespace {
@@ -42,7 +43,7 @@ std::vector<Balance> Stock::balances(std::optional<std::string> const &date, std
         "JOIN sub ON g.parent_id = sub.id) SELECT id FROM sub)) "
         "GROUP BY m.item_id HAVING sum(m.qty) <> 0 ORDER BY i.name");
     if (date) {
-        stmt.bind(1, *date);
+        stmt.bind(1, *date + " 23:59:59");
     }
     if (group) {
         stmt.bind(2, *group);
@@ -64,7 +65,7 @@ std::vector<Balance> Stock::balances(std::optional<std::string> const &date, std
 }
 
 void Stock::check_non_negative(std::vector<std::int64_t> const &items) const {
-    // остаток на конец каждого дня: движения внутри дня не упорядочены, важен итог дня
+    // остаток после каждого момента (дата и время); движения одного момента складываются
     auto stmt = m_db.prepare("SELECT date, sum(qty) FROM stock_moves WHERE item_id = ? GROUP BY date ORDER BY date");
     for (auto const id : items) {
         stmt.reset();
@@ -74,7 +75,7 @@ void Stock::check_non_negative(std::vector<std::int64_t> const &items) const {
             balance += stmt.column_int(1);
             if (balance < 0) {
                 auto const item = Catalog{m_db}.get(id);
-                throw UserError("«" + item.name + "»: остаток на " + ru_date(stmt.column_text(0)) + " уйдёт в минус, не хватает " +
+                throw UserError("«" + item.name + "»: остаток на " + ru_moment(stmt.column_text(0)) + " уйдёт в минус, не хватает " +
                                 format_qty(-balance, item.unit));
             }
         }

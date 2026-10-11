@@ -128,6 +128,30 @@ void check_date(std::string_view date) {
     }
 }
 
+std::string normalize_time(std::string_view time) {
+    auto const fail = [&] { throw UserError("неверное время «" + std::string(time) + "», нужен формат ЧЧ:ММ"); };
+    if ((time.size() != 5 && time.size() != 8) || time[2] != ':' || (time.size() == 8 && time[5] != ':')) {
+        fail();
+    }
+    auto const h = parse_part(time.substr(0, 2));
+    auto const m = parse_part(time.substr(3, 2));
+    auto const sec = time.size() == 8 ? parse_part(time.substr(6, 2)) : 0;
+    if (h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 59) {
+        fail();
+    }
+    return std::string(time.substr(0, 5)) + ":" + (time.size() == 8 ? std::string(time.substr(6, 2)) : "00");
+}
+
+std::string moment(Document const &doc) { return doc.date + " " + doc.time; }
+
+std::string ru_moment(std::string const &moment) {
+    auto out = ru_date(moment.substr(0, 10));
+    if (moment.size() >= 16 && moment.substr(11) != "00:00:00") {
+        out += " " + moment.substr(11, 5);
+    }
+    return out;
+}
+
 Documents::Documents(Database &db) : m_db{db} {}
 
 std::vector<Document> Documents::list(DocFilter const &filter) const {
@@ -143,10 +167,10 @@ std::vector<Document> Documents::list(DocFilter const &filter) const {
         stmt.bind(1, types);
     }
     if (filter.date_from) {
-        stmt.bind(2, *filter.date_from);
+        stmt.bind(2, *filter.date_from + " 00:00:00");
     }
     if (filter.date_to) {
-        stmt.bind(3, *filter.date_to);
+        stmt.bind(3, *filter.date_to + " 23:59:59");
     }
     std::vector<std::int64_t> ids;
     while (stmt.step()) {
@@ -172,7 +196,9 @@ Document Documents::get(std::int64_t id) const {
     doc.id = id;
     doc.type = doc_type_from_string(head.column_text(0));
     doc.number = head.column_int(1);
-    doc.date = head.column_text(2);
+    auto const when = head.column_text(2);
+    doc.date = when.substr(0, 10);
+    doc.time = when.size() > 11 ? when.substr(11) : "00:00:00";
     doc.status = head.column_text(3);
     doc.comment = head.column_text(4);
     if (!head.column_is_null(5)) {
@@ -209,6 +235,7 @@ Document Documents::get(std::int64_t id) const {
 
 std::int64_t Documents::create(Document const &input) {
     auto doc = input;
+    doc.time = normalize_time(doc.time);
     normalize(doc);
     Transaction tx{m_db};
     if (doc.type == DocType::RETURN && doc.base_id) {
@@ -229,7 +256,7 @@ std::int64_t Documents::create(Document const &input) {
     auto const number = next.column_int(0);
 
     auto ins = m_db.prepare("INSERT INTO docs (type, number, date, comment, price_type_id, partner_id, base_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
-    ins.bind(1, to_string(doc.type)).bind(2, number).bind(3, doc.date).bind(4, doc.comment);
+    ins.bind(1, to_string(doc.type)).bind(2, number).bind(3, moment(doc)).bind(4, doc.comment);
     if (doc.price_type_id) {
         ins.bind(5, *doc.price_type_id);
     }
@@ -254,6 +281,7 @@ void Documents::update(Document const &doc) {
     auto const old_items = item_ids(old);
     auto checked = doc;
     checked.type = old.type;
+    checked.time = normalize_time(checked.time);
     checked.base_id = old.base_id;
     normalize(checked);
     if (checked.type == DocType::RETURN && checked.base_id) {
@@ -270,7 +298,7 @@ void Documents::update(Document const &doc) {
     }
 
     auto upd = m_db.prepare("UPDATE docs SET date = ?, comment = ?, price_type_id = ?, partner_id = ? WHERE id = ?");
-    upd.bind(1, doc.date).bind(2, doc.comment).bind(5, doc.id);
+    upd.bind(1, moment(checked)).bind(2, doc.comment).bind(5, doc.id);
     if (checked.price_type_id) {
         upd.bind(3, *checked.price_type_id);
     } else {
@@ -436,7 +464,8 @@ void Documents::check_postable(Document const &doc) const {
     }
     if (!missing.empty()) {
         auto const type = Prices{m_db}.type(*doc.price_type_id);
-        throw UserError("нет цены в типе «" + type.name + "» на " + ru_date(doc.date) + ": " + missing + ". Установите цену или введите её в строке");
+        throw UserError("нет цены в типе «" + type.name + "» на " + ru_moment(moment(doc)) + ": " + missing +
+                        ". Установите цену или введите её в строке");
     }
 }
 
@@ -478,7 +507,7 @@ void Documents::check_return(Document const &doc) const {
     if (sale.status != "posted") {
         throw UserError(sale_name + " не проведена");
     }
-    if (doc.date < sale.date) {
+    if (moment(doc) < moment(sale)) {
         throw UserError("возврат не может быть раньше реализации: " + sale_name);
     }
     std::map<std::int64_t, Returnable> available;
@@ -536,7 +565,7 @@ void Documents::write_moves(Document const &doc) {
     auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (?, ?, ?, ?)");
     for (auto const &line : doc.lines) {
         ins.reset();
-        ins.bind(1, doc.id).bind(2, line.item_id).bind(3, sign * line.qty).bind(4, doc.date);
+        ins.bind(1, doc.id).bind(2, line.item_id).bind(3, sign * line.qty).bind(4, moment(doc));
         ins.step();
     }
 }
@@ -571,12 +600,12 @@ void Documents::write_lines(Document const &doc) {
             ins.bind(4, *line.price_kop);
         } else if (doc.type == DocType::SALE && doc.price_type_id) {
             // цена не передана: берётся из типа цен документа на его дату
-            if (auto const price = prices.price(*doc.price_type_id, line.item_id, doc.date)) {
+            if (auto const price = prices.price(*doc.price_type_id, line.item_id, moment(doc))) {
                 ins.bind(4, *price);
             }
         }
         if (with_cost) {
-            if (auto const cost = prices.price(COST_PRICE_TYPE, line.item_id, doc.date)) {
+            if (auto const cost = prices.price(COST_PRICE_TYPE, line.item_id, moment(doc))) {
                 ins.bind(5, *cost);
             }
         }

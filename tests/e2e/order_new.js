@@ -4,7 +4,7 @@ const select = row.querySelector('select');
 select.value = [...select.options].find(o => o.text === 'Батон').value;
 select.dispatchEvent(new Event('change'));
 row.querySelector('input').value = '3,5';
-document.querySelectorAll('.fields input')[1].value = 'Сидоров';
+[...document.querySelectorAll('.fields label')].find(l => l.textContent.startsWith("Комментарий")).querySelector('input').value = 'Сидоров';
 btn('Сохранить').click();
 await sleep(800);
 log.push('после сохранения: ' + location.hash + ' / ' + document.querySelector('h2').innerText);

@@ -35,7 +35,7 @@ btn('Сохранить и провести').click();
 await sleep(900);
 const message = document.getElementById('message').textContent;
 log.push('без цены: ' + message);
-expect(message.includes('нет цены в типе «Вариант 1» на 12.10.2026: Торт'), 'нет отказа без цены: ' + message);
+expect(/нет цены в типе «Вариант 1» на 12\.10\.2026 \d\d:\d\d: Торт/.test(message), 'нет отказа без цены: ' + message);
 expect(/^#\/docs\/\d+$/.test(location.hash) && document.querySelector('.status.draft'), 'документ должен сохраниться непроведённым');
 
 rowOf('Торт').querySelector('input.money').value = '700';
