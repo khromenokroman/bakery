@@ -38,10 +38,11 @@ class DbFixture : public testing::Test {
         return r;
     }
 
-    /// Заявка из пар {продукция, количество в тысячных}.
-    static Document make_order(std::string date, std::vector<std::pair<std::int64_t, std::int64_t>> const &lines, std::string comment = {}) {
+    /// Документ вида type из пар {продукция, количество в тысячных}.
+    static Document make_doc(DocType type, std::string date, std::vector<std::pair<std::int64_t, std::int64_t>> const &lines,
+                             std::string comment = {}) {
         Document d;
-        d.type = DocType::ORDER;
+        d.type = type;
         d.date = std::move(date);
         d.comment = std::move(comment);
         for (auto const &[id, qty] : lines) {
@@ -51,6 +52,11 @@ class DbFixture : public testing::Test {
             d.lines.push_back(l);
         }
         return d;
+    }
+
+    /// Заявка из пар {продукция, количество в тысячных}.
+    static Document make_order(std::string date, std::vector<std::pair<std::int64_t, std::int64_t>> const &lines, std::string comment = {}) {
+        return make_doc(DocType::ORDER, std::move(date), lines, std::move(comment));
     }
 
     Database m_db;

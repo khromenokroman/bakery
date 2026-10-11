@@ -170,3 +170,9 @@ Document document_from_json(nlohmann::json const &j) {
     }
     return doc;
 }
+
+nlohmann::json to_json(Balance const &balance) {
+    return {
+        {"item_id", balance.item_id}, {"name", balance.name}, {"unit", to_string(balance.unit)}, {"qty", balance.qty}, {"archived", balance.archived},
+    };
+}

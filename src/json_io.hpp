@@ -8,6 +8,7 @@
 #include "catalog.hpp"
 #include "docs.hpp"
 #include "requirements.hpp"
+#include "stock.hpp"
 
 /**
  * @brief Разбирает тело запроса как JSON-объект.
@@ -42,3 +43,5 @@
  * type необязателен (для изменения существующего документа), comment по умолчанию пустой.
  */
 [[nodiscard]] Document document_from_json(nlohmann::json const &j);
+
+[[nodiscard]] nlohmann::json to_json(Balance const &balance);

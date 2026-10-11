@@ -37,6 +37,9 @@ COOKIE=$(call POST items '{"name":"Печенье","kind":"product","unit":"kg"}
 call PUT "items/$DOUGH/recipe" "{\"output_qty\":1000,\"lines\":[{\"component_id\":$FLOUR,\"qty\":600}]}" >/dev/null
 call PUT "items/$BREAD/recipe" "{\"output_qty\":1000,\"lines\":[{\"component_id\":$DOUGH,\"qty\":450},{\"component_id\":$EGG,\"qty\":100}]}" >/dev/null
 O1=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"lines\":[{\"item_id\":$BREAD,\"qty\":10000}]}" | id)
+P1=$(call POST docs "{\"type\":\"production\",\"date\":\"2026-10-12\",\"lines\":[{\"item_id\":$BREAD,\"qty\":10000}]}" | id)
+P2=$(call POST docs "{\"type\":\"production\",\"date\":\"2026-10-12\",\"lines\":[{\"item_id\":$COOKIE,\"qty\":1000}]}" | id)
+call POST "docs/$P2/post" '' >/dev/null
 O2=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"comment\":\"Магазин\",\"lines\":[{\"item_id\":$COOKIE,\"qty\":1500}]}" | id)
 
 PAGES=(
@@ -49,6 +52,12 @@ PAGES=(
     "orders/$O1"
     "requirements?date=2026-10-12&docs=$O1"
     "requirements?date=2026-10-12&docs=$O1,$O2"
+    "docs"
+    "docs/new?type=production"
+    "docs/$P1"
+    "docs/$P2"
+    "stock?date=2026-10-12"
+    "stock?date=2026-10-01"
 )
 
 failed=0

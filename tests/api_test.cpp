@@ -290,3 +290,38 @@ TEST(ApiDocs, Errors) {
     EXPECT_EQ(r.status, 400);
     EXPECT_THAT(r.body.value("error", ""), HasSubstr("не выбрано ни одной заявки"));
 }
+
+/**
+ * @brief Поступление через API: проведение, остатки на дату, отмена проведения, фильтр по нескольким видам.
+ */
+TEST(ApiStock, ProductionPostUnpost) {
+    TestServer srv;
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    auto r = CALL(srv, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-12"}, {"lines", {{{"item_id", bread}, {"qty", 40000}}}}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    auto const id = std::to_string(r.body.at("id").get<std::int64_t>());
+    CALL(srv, "POST", "/api/docs", {{"type", "order"}, {"date", "2026-10-12"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}});
+
+    r = CALL(srv, "POST", "/api/docs/" + id + "/post");
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_EQ(r.body.at("status"), "posted");
+
+    r = CALL(srv, "GET", "/api/stock?date=2026-10-12");
+    ASSERT_EQ(r.body.size(), 1U) << r.body;
+    EXPECT_EQ(r.body.at(0).at("qty"), 40000);
+    EXPECT_EQ(r.body.at(0).at("unit"), "pcs");
+    EXPECT_TRUE(CALL(srv, "GET", "/api/stock?date=2026-10-11").body.empty()) << "до поступления";
+
+    r = CALL(srv, "POST", "/api/docs/" + id + "/post");
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("уже проведён"));
+
+    EXPECT_EQ(CALL(srv, "GET", "/api/docs?type=production,order").body.size(), 2U);
+    EXPECT_EQ(CALL(srv, "GET", "/api/docs?type=production").body.size(), 1U);
+    EXPECT_EQ(CALL(srv, "GET", "/api/docs?type=production,bogus").status, 400);
+
+    r = CALL(srv, "POST", "/api/docs/" + id + "/unpost");
+    EXPECT_EQ(r.body.at("status"), "draft") << r.body;
+    EXPECT_TRUE(CALL(srv, "GET", "/api/stock").body.empty()) << "после отмены проведения";
+    EXPECT_EQ(CALL(srv, "GET", "/api/stock?date=12.10.2026").status, 400);
+}

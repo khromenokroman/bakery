@@ -228,6 +228,46 @@ table.needs {
     max-width: 640px;
 }
 
+.status {
+    margin-left: 12px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: normal;
+    vertical-align: middle;
+}
+
+td .status {
+    margin-left: 0;
+}
+
+.status.posted {
+    background: var(--ok-bg);
+    color: var(--ok-fg);
+}
+
+.status.draft {
+    background: #eee;
+    color: var(--muted);
+}
+
+.panel {
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: #fff;
+}
+
+.panel label.check {
+    margin: 4px 0;
+}
+
+input:disabled, select:disabled {
+    background: #f3f3f3;
+    color: var(--fg);
+}
+
 @media print {
     .no-print, #message {
         display: none !important;

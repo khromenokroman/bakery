@@ -54,7 +54,7 @@ std::int64_t path_id(httplib::Request const &req) {
 
 } // namespace
 
-Api::Api(Database &db, std::string web_dir) : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_docs{db}, m_db{db} {}
+Api::Api(Database &db, std::string web_dir) : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_docs{db}, m_stock{db}, m_db{db} {}
 
 Api::Handler Api::guarded(Handler handler) {
     return [this, handler = std::move(handler)](httplib::Request const &req, httplib::Response &res) {
@@ -161,7 +161,12 @@ void Api::register_docs(httplib::Server &server) {
     server.Get("/api/docs", guarded([this](httplib::Request const &req, httplib::Response &res) {
                    DocFilter filter;
                    if (req.has_param("type")) {
-                       filter.type = doc_type_from_string(req.get_param_value("type"));
+                       auto const text = req.get_param_value("type");
+                       for (std::size_t pos = 0; pos <= text.size();) {
+                           auto const end = std::min(text.find(',', pos), text.size());
+                           filter.types.push_back(doc_type_from_string(text.substr(pos, end - pos)));
+                           pos = end + 1;
+                       }
                    }
                    if (req.has_param("from")) {
                        check_date(req.get_param_value("from"));
@@ -201,6 +206,31 @@ void Api::register_docs(httplib::Server &server) {
                       m_docs.remove(path_id(req));
                       send_json(res, nlohmann::json::object());
                   }));
+
+    server.Post("/api/docs/:id/post", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                    auto const id = path_id(req);
+                    m_docs.post(id);
+                    send_json(res, to_json(m_docs.get(id)));
+                }));
+
+    server.Post("/api/docs/:id/unpost", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                    auto const id = path_id(req);
+                    m_docs.unpost(id);
+                    send_json(res, to_json(m_docs.get(id)));
+                }));
+
+    server.Get("/api/stock", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   std::optional<std::string> date;
+                   if (req.has_param("date")) {
+                       check_date(req.get_param_value("date"));
+                       date = req.get_param_value("date");
+                   }
+                   auto out = nlohmann::json::array();
+                   for (auto const &b : m_stock.balances(date)) {
+                       out.push_back(to_json(b));
+                   }
+                   send_json(res, out);
+               }));
 
     server.Get("/api/requirements", guarded([this](httplib::Request const &req, httplib::Response &res) {
                    send_json(res, to_json(compute_requirements(m_db, parse_ids(req.get_param_value("docs")))));

@@ -51,7 +51,7 @@ struct Document {
  * @brief Фильтр списка документов; даты включительно.
  */
 struct DocFilter {
-    std::optional<DocType> type;
+    std::vector<DocType> types; ///< пустой - все виды
     std::optional<std::string> date_from;
     std::optional<std::string> date_to;
 };
@@ -63,7 +63,10 @@ struct DocFilter {
 void check_date(std::string_view date);
 
 /**
- * @brief Документы. Сейчас поддерживаются заявки; остальные виды добавляются вместе с проведением.
+ * @brief Документы. Поддерживаются заявки (без движений) и поступление из производства.
+ *
+ * Проведение пишет движения склада, отмена проведения их удаляет; остаток не может уйти в минус
+ * ни на один день. Проведённый документ нельзя изменить или удалить.
  *
  * Методы не захватывают блокировку базы: это делает вызывающий.
  */
@@ -92,6 +95,18 @@ class Documents {
 
     /// @throws NotFoundError, UserError для проведённого документа
     void remove(std::int64_t id);
+
+    /**
+     * @brief Проводит документ: движения склада по строкам на дату документа.
+     * @throws NotFoundError, UserError уже проведён, вид без движений, остаток уйдёт в минус
+     */
+    void post(std::int64_t id);
+
+    /**
+     * @brief Отменяет проведение: удаляет движения документа.
+     * @throws NotFoundError, UserError не проведён, остаток уйдёт в минус
+     */
+    void unpost(std::int64_t id);
 
    private:
     /// Проверки вида документа, даты и строк; old_items - позиции, уже бывшие в документе.

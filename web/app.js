@@ -359,25 +359,43 @@ async function renderOrders(view, params) {
             el('button', {class: 'primary', onclick: calculate}, 'Рассчитать потребность')) : null);
 }
 
+/** Настройки карточки по виду документа. */
+const DOC_TYPES = {
+    order: {
+        title: 'Заявка', create: 'Новая заявка', comment: 'От кого', placeholder: 'магазин, имя, телефон',
+        back: d => '#/orders?date=' + d, backTitle: '← Заявки', posting: false, fill: false,
+    },
+    production: {
+        title: 'Поступление из производства', create: 'Новое поступление', comment: 'Комментарий', placeholder: '',
+        back: () => '#/docs', backTitle: '← Документы', posting: true, fill: true,
+    },
+};
+
 /**
- * Карточка заявки; id = null для новой.
+ * Карточка документа; id = null для нового (вид берётся из params.type, по умолчанию заявка).
  */
-async function renderOrder(view, id, params) {
+async function renderDoc(view, id, params) {
     const [doc, products] = await Promise.all([
         id ? api('GET', `docs/${id}`) : Promise.resolve(null),
         api('GET', 'items?kind=product&archived=1'),
     ]);
+    const type = doc ? doc.type : (params.get('type') || 'order');
+    const cfg = DOC_TYPES[type];
+    if (!cfg) {
+        throw new Error('неизвестный вид документа: ' + type);
+    }
+    const posted = doc && doc.status === 'posted';
     const inDoc = new Set((doc ? doc.lines : []).map(l => l.item_id));
     const candidates = products.filter(p => !p.archived || inDoc.has(p.id));
     const byId = new Map(products.map(p => [p.id, p]));
     const date = doc ? doc.date : (params.get('date') || isoDate(new Date()));
 
-    const dateInput = el('input', {type: 'date', value: date});
-    const comment = el('input', {value: doc ? doc.comment : '', size: 40, placeholder: 'магазин, имя, телефон'});
+    const dateInput = el('input', {type: 'date', value: date, disabled: posted});
+    const comment = el('input', {value: doc ? doc.comment : '', size: 40, placeholder: cfg.placeholder, disabled: posted});
     const tbody = el('tbody');
 
     const addRow = line => {
-        const select = el('select', {}, el('option', {value: ''}, '— выберите —'),
+        const select = el('select', {disabled: posted}, el('option', {value: ''}, '— выберите —'),
             candidates.map(p => el('option', {value: p.id, selected: line && p.id === line.item_id}, p.name + (p.archived ? ' (архив)' : ''))));
         const unitCell = el('td');
         const updateUnit = () => {
@@ -388,9 +406,9 @@ async function renderOrder(view, id, params) {
         updateUnit();
         const row = el('tr', {},
             el('td', {}, select),
-            el('td', {class: 'num'}, el('input', {class: 'qty', value: line ? formatQty(line.qty) : ''})),
+            el('td', {class: 'num'}, el('input', {class: 'qty', value: line ? formatQty(line.qty) : '', disabled: posted})),
             unitCell,
-            el('td', {}, el('button', {class: 'danger', title: 'Убрать строку', onclick: () => row.remove()}, '✕')));
+            el('td', {}, posted ? null : el('button', {class: 'danger', title: 'Убрать строку', onclick: () => row.remove()}, '✕')));
         tbody.append(row);
         return row;
     };
@@ -399,7 +417,8 @@ async function renderOrder(view, id, params) {
         addRow(null);
     }
 
-    const save = async () => {
+    /** Строки из таблицы; null и сообщение, если что-то не так. */
+    const collect = () => {
         const lines = [];
         for (const row of tbody.children) {
             const itemId = Number(row.querySelector('select').value);
@@ -409,42 +428,165 @@ async function renderOrder(view, id, params) {
             }
             if (!itemId) {
                 showMessage('В строке не выбрана продукция');
-                return;
+                return null;
             }
             const qty = parseQty(qtyText);
             if (qty === null) {
                 showMessage(`«${byId.get(itemId).name}»: введите количество, не более трёх знаков после запятой`);
-                return;
+                return null;
             }
             lines.push({item_id: itemId, qty});
         }
-        const body = {type: 'order', date: dateInput.value, comment: comment.value, lines};
+        return lines;
+    };
+
+    const save = async andPost => {
+        const lines = collect();
+        if (!lines) {
+            return;
+        }
+        const body = {type, date: dateInput.value, comment: comment.value, lines};
         let saved;
-        if (await attempt(async () => {
+        const ok = await attempt(async () => {
             saved = await api(doc ? 'PUT' : 'POST', doc ? `docs/${doc.id}` : 'docs', body);
-        }, 'Заявка сохранена')) {
-            location.hash = '#/orders?date=' + saved.date;
+            if (andPost) {
+                saved = await api('POST', `docs/${saved.id}/post`);
+            }
+        }, andPost ? 'Сохранено и проведено' : 'Сохранено');
+        if (saved && !doc && cfg.posting) {
+            // документ создан: дальше работаем с ним, даже если проведение не удалось
+            history.replaceState(null, '', '#/docs/' + saved.id);
+        }
+        if (ok && !cfg.posting) {
+            location.hash = cfg.back(saved.date);
+        } else if (saved) {
+            const message = document.getElementById('message').textContent;
+            const kind = document.getElementById('message').className;
+            await renderDoc(view, saved.id, params);
+            showMessage(message, kind);
+        }
+    };
+    const unpost = async () => {
+        if (await attempt(() => api('POST', `docs/${doc.id}/unpost`), 'Проведение отменено')) {
+            await renderDoc(view, doc.id, params);
         }
     };
     const remove = async () => {
-        if (confirm(`Удалить заявку № ${doc.number}?`) && await attempt(() => api('DELETE', `docs/${doc.id}`), 'Заявка удалена')) {
-            location.hash = '#/orders?date=' + doc.date;
+        const name = `${cfg.title.toLowerCase()} № ${doc.number}`;
+        if (confirm(`Удалить ${name}?`) && await attempt(() => api('DELETE', `docs/${doc.id}`), 'Удалено')) {
+            location.hash = cfg.back(doc.date);
         }
     };
 
+    /** Панель «Заполнить по заявкам»: заявки на дату с галочками, строки заменяются суммой. */
+    const fillPanel = el('div', {class: 'panel', hidden: true});
+    const openFill = async (fillDate) => {
+        const orders = await api('GET', `docs?type=order&from=${fillDate}&to=${fillDate}`);
+        const checks = orders.map(o => [o, el('input', {type: 'checkbox', checked: true})]);
+        const datePick = el('input', {type: 'date', value: fillDate, onchange: e => e.target.value && openFill(e.target.value).catch(err => showMessage(err.message))});
+        const apply = async () => {
+            const chosen = checks.filter(([, c]) => c.checked).map(([o]) => o);
+            if (!chosen.length) {
+                showMessage('Отметьте хотя бы одну заявку');
+                return;
+            }
+            const filled = [...tbody.children].some(r => r.querySelector('select').value);
+            if (filled && !confirm('Заменить строки документа суммой выбранных заявок?')) {
+                return;
+            }
+            const req = await api('GET', 'requirements?docs=' + chosen.map(o => o.id).join(','));
+            tbody.replaceChildren();
+            req.products.forEach(p => addRow({item_id: p.item_id, qty: p.qty}));
+            if (!comment.value.trim()) {
+                comment.value = `по заявкам № ${chosen.map(o => o.number).join(', ')} на ${humanDate(fillDate).split(',')[0]}`;
+            }
+            fillPanel.hidden = true;
+            showMessage('Строки заполнены по заявкам, проверьте количества', 'ok');
+        };
+        fillPanel.replaceChildren(
+            el('div', {class: 'toolbar'}, el('strong', {}, 'Заявки на'), datePick,
+                el('button', {onclick: () => { fillPanel.hidden = true; }}, 'Закрыть')),
+            orders.length
+                ? el('div', {}, checks.map(([o, c]) => el('label', {class: 'check'}, c,
+                    `№ ${o.number}${o.comment ? ' (' + o.comment + ')' : ''}: ${lineSummary(o.lines)}`)))
+                : el('p', {class: 'muted'}, 'На эту дату заявок нет'),
+            orders.length ? el('div', {class: 'toolbar', style: 'margin-top: 8px'},
+                el('button', {class: 'primary', onclick: () => apply().catch(err => showMessage(err.message))}, 'Заполнить')) : null);
+        fillPanel.hidden = false;
+    };
+
+    const title = doc ? `${cfg.title} № ${doc.number}` : cfg.create;
     render(view,
-        el('a', {class: 'back', href: '#/orders?date=' + date}, '← Заявки'),
-        el('h2', {}, doc ? `Заявка № ${doc.number}` : 'Новая заявка'),
+        el('a', {class: 'back', href: cfg.back(date)}, cfg.backTitle),
+        el('h2', {}, title, cfg.posting && doc ? el('span', {class: 'status ' + doc.status}, posted ? 'проведён' : 'не проведён') : null),
         el('div', {class: 'fields'},
             el('label', {}, 'Дата', dateInput),
-            el('label', {}, 'От кого', comment)),
+            el('label', {}, cfg.comment, comment)),
+        cfg.fill && !posted ? el('div', {class: 'toolbar', style: 'margin-top: 12px'},
+            el('button', {onclick: () => openFill(dateInput.value || date).catch(err => showMessage(err.message))}, 'Заполнить по заявкам')) : null,
+        fillPanel,
         el('div', {class: 'table-wrap', style: 'margin-top: 12px'}, el('table', {},
             el('thead', {}, el('tr', {}, el('th', {}, 'Продукция'), el('th', {class: 'num'}, 'Количество'), el('th', {}, 'Ед.'), el('th'))),
             tbody)),
         el('div', {class: 'toolbar', style: 'margin-top: 8px'},
-            el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка'),
-            el('button', {class: 'primary', onclick: save}, 'Сохранить'),
-            doc ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null));
+            posted ? null : el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка'),
+            posted ? null : el('button', {class: cfg.posting ? null : 'primary', onclick: () => save(false)}, 'Сохранить'),
+            cfg.posting && !posted ? el('button', {class: 'primary', onclick: () => save(true)}, 'Сохранить и провести') : null,
+            posted ? el('button', {onclick: unpost}, 'Отменить проведение') : null,
+            doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null),
+        posted ? el('p', {class: 'muted'}, 'Проведённый документ не редактируется. Чтобы изменить, отмените проведение.') : null);
+}
+
+// ---------- документы ----------
+
+const docsState = {from: null, to: null};
+
+async function renderDocs(view) {
+    const today = isoDate(new Date());
+    const from = docsState.from || shiftDate(today, -7);
+    const to = docsState.to || today;
+    const docs = await api('GET', `docs?type=production&from=${from}&to=${to}`);
+    const fromInput = el('input', {type: 'date', value: from, onchange: e => { docsState.from = e.target.value; route(); }});
+    const toInput = el('input', {type: 'date', value: to, onchange: e => { docsState.to = e.target.value; route(); }});
+
+    const rows = docs.slice().reverse().map(doc => el('tr', {class: 'link', onclick: () => { location.hash = '#/docs/' + doc.id; }},
+        el('td', {}, humanDate(doc.date)),
+        el('td', {}, `${DOC_TYPES[doc.type].title} № ${doc.number}`),
+        el('td', {}, el('span', {class: 'status ' + doc.status}, doc.status === 'posted' ? 'проведён' : 'не проведён')),
+        el('td', {}, doc.comment),
+        el('td', {}, lineSummary(doc.lines))));
+
+    render(view,
+        el('h2', {}, 'Документы'),
+        el('div', {class: 'toolbar'},
+            el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=production'; }}, 'Новое поступление')),
+        el('div', {class: 'toolbar'}, 'с', fromInput, 'по', toInput),
+        el('div', {class: 'table-wrap'}, el('table', {},
+            el('thead', {}, el('tr', {}, el('th', {}, 'Дата'), el('th', {}, 'Документ'), el('th', {}, 'Статус'), el('th', {}, 'Комментарий'), el('th', {}, 'Состав'))),
+            el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 5, class: 'muted'}, 'За эти дни документов нет'))))));
+}
+
+// ---------- остатки ----------
+
+async function renderStock(view, params) {
+    const date = params.get('date') || isoDate(new Date());
+    const balances = await api('GET', 'stock?date=' + date);
+    const go = d => { location.hash = '#/stock?date=' + d; };
+    render(view,
+        el('h2', {}, 'Остатки'),
+        el('div', {class: 'toolbar'},
+            el('button', {title: 'Предыдущий день', onclick: () => go(shiftDate(date, -1))}, '←'),
+            el('input', {type: 'date', value: date, onchange: e => e.target.value && go(e.target.value)}),
+            el('button', {title: 'Следующий день', onclick: () => go(shiftDate(date, 1))}, '→'),
+            el('span', {class: 'muted'}, 'на конец дня ' + humanDate(date))),
+        el('div', {class: 'table-wrap'}, el('table', {class: 'needs'},
+            el('thead', {}, el('tr', {}, el('th', {}, 'Продукция'), el('th', {class: 'num'}, 'Остаток'), el('th', {}, 'Ед.'))),
+            el('tbody', {}, balances.length
+                ? balances.map(b => el('tr', {class: b.archived ? 'archived' : null},
+                    el('td', {}, b.name, b.archived ? el('span', {class: 'muted'}, ' (архив)') : null),
+                    el('td', {class: 'num'}, formatQty(b.qty)),
+                    el('td', {}, UNITS[b.unit])))
+                : el('tr', {}, el('td', {colspan: 3, class: 'muted'}, 'Остатков нет'))))));
 }
 
 // ---------- расчёт потребности ----------
@@ -500,9 +642,16 @@ async function route() {
         } else if (hash === '#/orders') {
             await renderOrders(view, params);
         } else if (hash === '#/orders/new') {
-            await renderOrder(view, null, params);
-        } else if ((m = hash.match(/^#\/orders\/(\d+)$/))) {
-            await renderOrder(view, Number(m[1]), params);
+            params.set('type', 'order');
+            await renderDoc(view, null, params);
+        } else if ((m = hash.match(/^#\/(?:orders|docs)\/(\d+)$/))) {
+            await renderDoc(view, Number(m[1]), params);
+        } else if (hash === '#/docs/new') {
+            await renderDoc(view, null, params);
+        } else if (hash === '#/docs') {
+            await renderDocs(view);
+        } else if (hash === '#/stock') {
+            await renderStock(view, params);
         } else if (hash === '#/requirements') {
             await renderRequirements(view, params);
         } else {

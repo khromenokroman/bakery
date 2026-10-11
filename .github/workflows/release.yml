@@ -27,7 +27,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates git build-essential cmake dpkg-dev file curl chromium \
+            ca-certificates git build-essential cmake dpkg-dev file curl chromium nodejs \
             libsqlite3-dev nlohmann-json3-dev libgtest-dev libgmock-dev
 
       - name: Checkout
@@ -62,6 +62,9 @@ jobs:
 
       - name: Web pages in headless browser
         run: tests/web_smoke.sh ./build/bakery web
+
+      - name: Web scenarios in headless browser
+        run: tests/web_e2e.sh ./build/bakery web
 
       - name: Package DEB
         working-directory: build

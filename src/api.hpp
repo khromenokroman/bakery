@@ -5,6 +5,7 @@
 #include "catalog.hpp"
 #include "db.hpp"
 #include "docs.hpp"
+#include "stock.hpp"
 
 namespace httplib {
 class Server;
@@ -42,5 +43,6 @@ class Api {
     std::string m_web_dir;
     Catalog m_catalog;
     Documents m_docs;
+    Stock m_stock;
     Database &m_db;
 };

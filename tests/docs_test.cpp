@@ -99,7 +99,7 @@ TEST_F(DocsTest, ListFilter) {
     m_docs.create(make_order("2026-10-11", {{m_bread, 1000}}, "a"));
     m_docs.create(make_order("2026-10-12", {{m_bread, 1000}}, "b"));
     DocFilter filter;
-    filter.type = DocType::ORDER;
+    filter.types = {DocType::ORDER};
     filter.date_from = "2026-10-11";
     filter.date_to = "2026-10-12";
     std::vector<std::string> comments;

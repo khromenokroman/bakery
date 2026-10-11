@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "errors.hpp"
+#include "stock.hpp"
 
 namespace {
 
@@ -22,6 +23,17 @@ constexpr std::array<std::pair<DocType, std::string_view>, 6> TYPES = {{
     {DocType::WRITEOFF, "writeoff"},
     {DocType::INVENTORY, "inventory"},
 }};
+
+/// Знак движения склада для вида документа; 0 - вид без движений.
+int move_sign(DocType type) { return type == DocType::PRODUCTION ? 1 : 0; }
+
+std::vector<std::int64_t> item_ids(Document const &doc) {
+    std::vector<std::int64_t> ids;
+    for (auto const &l : doc.lines) {
+        ids.push_back(l.item_id);
+    }
+    return ids;
+}
 
 int parse_part(std::string_view text) {
     int value = 0;
@@ -70,11 +82,16 @@ void check_date(std::string_view date) {
 Documents::Documents(Database &db) : m_db{db} {}
 
 std::vector<Document> Documents::list(DocFilter const &filter) const {
+    // виды передаются строкой через запятую и ищутся в ней как ",order,"
+    std::string types;
+    for (auto const t : filter.types) {
+        types += "," + std::string(to_string(t));
+    }
     auto stmt = m_db.prepare(
-        "SELECT id FROM docs WHERE (?1 IS NULL OR type = ?1) AND (?2 IS NULL OR date >= ?2) AND (?3 IS NULL OR date <= ?3) "
-        "ORDER BY date, type, number");
-    if (filter.type) {
-        stmt.bind(1, to_string(*filter.type));
+        "SELECT id FROM docs WHERE (?1 IS NULL OR instr(?1 || ',', ',' || type || ',') > 0) AND (?2 IS NULL OR date >= ?2) "
+        "AND (?3 IS NULL OR date <= ?3) ORDER BY date, type, number");
+    if (!types.empty()) {
+        stmt.bind(1, types);
     }
     if (filter.date_from) {
         stmt.bind(2, *filter.date_from);
@@ -174,8 +191,47 @@ void Documents::remove(std::int64_t id) {
     tx.commit();
 }
 
+void Documents::post(std::int64_t id) {
+    Transaction tx{m_db};
+    auto const doc = get(id);
+    if (doc.status == "posted") {
+        throw UserError("документ уже проведён");
+    }
+    auto const sign = move_sign(doc.type);
+    if (sign == 0) {
+        throw UserError("документ этого вида не проводится");
+    }
+    auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (?, ?, ?, ?)");
+    for (auto const &line : doc.lines) {
+        ins.reset();
+        ins.bind(1, id).bind(2, line.item_id).bind(3, sign * line.qty).bind(4, doc.date);
+        ins.step();
+    }
+    auto upd = m_db.prepare("UPDATE docs SET status = 'posted' WHERE id = ?");
+    upd.bind(1, id);
+    upd.step();
+    Stock{m_db}.check_non_negative(item_ids(doc));
+    tx.commit();
+}
+
+void Documents::unpost(std::int64_t id) {
+    Transaction tx{m_db};
+    auto const doc = get(id);
+    if (doc.status != "posted") {
+        throw UserError("документ не проведён");
+    }
+    auto del = m_db.prepare("DELETE FROM stock_moves WHERE doc_id = ?");
+    del.bind(1, id);
+    del.step();
+    auto upd = m_db.prepare("UPDATE docs SET status = 'draft' WHERE id = ?");
+    upd.bind(1, id);
+    upd.step();
+    Stock{m_db}.check_non_negative(item_ids(doc));
+    tx.commit();
+}
+
 void Documents::validate(Document const &doc, std::vector<std::int64_t> const &old_items) const {
-    if (doc.type != DocType::ORDER) {
+    if (doc.type != DocType::ORDER && doc.type != DocType::PRODUCTION) {
         throw UserError("документы вида " + std::string(to_string(doc.type)) + " пока не поддерживаются");
     }
     check_date(doc.date);
@@ -193,7 +249,7 @@ void Documents::validate(Document const &doc, std::vector<std::int64_t> const &o
             throw UserError("«" + item.name + "» указан в документе дважды");
         }
         if (item.kind != Kind::PRODUCT) {
-            throw UserError("«" + item.name + "» не продукция: в заявку входит только продукция");
+            throw UserError("«" + item.name + "» не продукция: в документ входит только продукция");
         }
         if (item.archived && std::find(old_items.begin(), old_items.end(), line.item_id) == old_items.end()) {
             throw UserError("«" + item.name + "» в архиве, добавить в документ нельзя");
