@@ -92,6 +92,8 @@ PAGES=(
     "print/$O1"
     "print/$RET"
     "print/$P1"
+    "print/$SALE2?form=torg12"
+    "print/$SALE2?form=upd"
 )
 
 failed=0
@@ -101,7 +103,7 @@ for page in "${PAGES[@]}"; do
     main=$(tr -d '\n' <<<"$dom" | grep -o '<main.*</main>' || true)
     message=$(grep -oE '<div id="message"[^>]*>[^<]*' <<<"$dom" || true)
     problems=()
-    grep -q '<h2' <<<"$main" || problems+=("страница не нарисована (нет <h2>)")
+    grep -qE '<h2|class="form-sheet' <<<"$main" || problems+=("страница не нарисована (нет <h2> и листа формы)")
     grep -q 'hidden' <<<"$message" || problems+=("показана ошибка: ${message#*>}")
     grep -qE '>[^<]*null[^<]*<' <<<"$main" && problems+=("в тексте есть null")
     if [ ${#problems[@]} -eq 0 ]; then

@@ -976,6 +976,8 @@ async function renderDoc(view, id, params) {
                 cfg.fill ? el('button', {onclick: () => openFill(dateInput.value || date).catch(err => showMessage(err.message))}, 'Заполнить по заявкам') : null,
                 type === 'sale' && posted ? el('button', {onclick: () => { location.hash = `#/docs/new?type=return&base=${doc.id}`; }}, 'Оформить возврат') : null,
                 doc ? el('button', {onclick: () => window.open(`#/print/${doc.id}`, '_blank')}, 'Печать') : null,
+                doc && type === 'sale' ? el('button', {onclick: () => window.open(`#/print/${doc.id}?form=torg12`, '_blank')}, 'ТОРГ-12') : null,
+                doc && type === 'sale' ? el('button', {onclick: () => window.open(`#/print/${doc.id}?form=upd`, '_blank')}, 'УПД') : null,
                 doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null)),
         base ? el('p', {},
             'По ', el('a', {href: '#/docs/' + base.id}, `реализации № ${base.number} от ${humanDate(base.date).split(',')[0]}`),
@@ -1223,8 +1225,16 @@ function requisitesLine(name, inn, kpp, address, phone) {
 /**
  * Печатная форма документа: шапка с реквизитами, таблица, итоги, сумма прописью, подписи.
  */
-async function renderPrint(view, id) {
+async function renderPrint(view, id, params) {
     const [doc, settings, items] = await Promise.all([api('GET', `docs/${id}`), api('GET', 'settings'), api('GET', 'items?kind=product&archived=1')]);
+    const form = params.get('form');
+    if (form === 'torg12' || form === 'upd') {
+        if (doc.type !== 'sale') {
+            throw new Error('ТОРГ-12 и УПД печатаются только для реализации');
+        }
+        const partner = doc.partner_id ? await api('GET', `partners/${doc.partner_id}`) : null;
+        return (form === 'torg12' ? renderTorg12 : renderUpd)(view, doc, settings, partner, items);
+    }
     const cfg = DOC_TYPES[doc.type];
     const partner = doc.partner_id ? await api('GET', `partners/${doc.partner_id}`) : null;
     const base = doc.base_id ? await api('GET', `docs/${doc.base_id}`) : null;
@@ -1289,6 +1299,217 @@ async function renderPrint(view, id) {
             el('div', {class: 'print-signs'}, (DOC_SIGNATURES[doc.type] || []).map(([role, key]) =>
                 el('div', {}, `${role} ____________________ ${key && settings[key] ? '/' + settings[key] + '/' : '/____________/'}`))),
             settings.doc_footer ? el('p', {class: 'muted'}, settings.doc_footer) : null));
+}
+
+// ---------- ТОРГ-12 и УПД ----------
+
+/** Коды единиц по ОКЕИ. */
+const OKEI = {pcs: '796', kg: '166', l: '112'};
+
+/** Число прописью мужского рода без единиц («номеров записей»): 2 -> "Два", 21 -> "Двадцать один". */
+function countInWords(n) {
+    return moneyInWords(n * 100).replace(/ рубл.*$/, '');
+}
+
+/**
+ * Строки реализации с выделенным НДС: цены включают НДС, НДС = сумма × ставка / (100 + ставка),
+ * цена без НДС = сумма без НДС / количество.
+ */
+function vatLines(doc, items, vatPayer) {
+    const rateOf = new Map(items.map(i => [i.id, i.vat_rate]));
+    return doc.lines.map((l, i) => {
+        const total = lineSum(l.qty, l.price_kop || 0);
+        const rate = vatPayer ? rateOf.get(l.item_id) : null;
+        const vat = rate ? Math.round(total * rate / (100 + rate)) : 0;
+        const net = total - vat;
+        return {n: i + 1, line: l, total, rate, vat, net, price: Math.round(net * 1000 / l.qty)};
+    });
+}
+
+const sumOf = (rows, key) => rows.reduce((acc, r) => acc + r[key], 0);
+const money0 = kop => formatMoney(kop);
+const rateText = r => (r === null || r === undefined ? 'без НДС' : r + '%');
+
+/** Поле формы с подписью под линией: "должность / подпись / расшифровка". */
+function signField(caption, value = '') {
+    return el('span', {class: 'f-sign'}, el('span', {class: 'f-line'}, value), el('span', {class: 'f-caption'}, caption));
+}
+
+function formToolbar(doc) {
+    return el('div', {class: 'toolbar no-print'},
+        el('button', {class: 'primary', onclick: () => window.print()}, 'Печать'),
+        el('button', {onclick: () => { location.hash = '#/docs/' + doc.id; }}, 'К документу'),
+        el('span', {class: 'muted'}, 'Форма повторяет унифицированную; перед первым использованием покажите её бухгалтеру.'));
+}
+
+function orgFull(s) {
+    return [s.org_name, s.org_inn && 'ИНН ' + s.org_inn, s.org_kpp && 'КПП ' + s.org_kpp, s.org_address, s.org_phone && 'тел. ' + s.org_phone,
+        s.bank_account && `р/с ${s.bank_account}`, s.bank_name && 'в ' + s.bank_name, s.bank_bik && 'БИК ' + s.bank_bik,
+        s.bank_corr_account && 'к/с ' + s.bank_corr_account].filter(Boolean).join(', ');
+}
+
+function partnerFull(p) {
+    return p ? [p.name, p.inn && 'ИНН ' + p.inn, p.kpp && 'КПП ' + p.kpp, p.address, p.phone && 'тел. ' + p.phone].filter(Boolean).join(', ') : '';
+}
+
+/**
+ * Товарная накладная по унифицированной форме ТОРГ-12 (постановление Госкомстата России от 25.12.98 № 132).
+ */
+function renderTorg12(view, doc, s, partner, items) {
+    const vatPayer = s.vat_payer === '1';
+    const rows = vatLines(doc, items, vatPayer);
+    const date = humanDate(doc.date).split(',')[0];
+    const total = sumOf(rows, 'total');
+    const party = (label, value, caption) => el('tr', {},
+        el('td', {class: 'f-label'}, label),
+        el('td', {class: 'f-value'}, value, el('div', {class: 'f-caption'}, caption)));
+    const head = ['Номер по по-рядку', 'Товар: наименование, характеристика, сорт, артикул товара', 'Товар: код', 'Единица измерения: наименование',
+        'Единица измерения: код по ОКЕИ', 'Вид упаковки', 'Количество: в одном месте', 'Количество: мест, штук', 'Масса брутто',
+        'Количество (масса нетто)', 'Цена, руб. коп.', 'Сумма без учета НДС, руб. коп.', 'НДС: ставка, %', 'НДС: сумма, руб. коп.',
+        'Сумма с учетом НДС, руб. коп.'];
+    const totalRow = label => el('tr', {class: 'f-total'},
+        el('td', {colspan: 7, class: 'right'}, label), el('td'), el('td'),
+        el('td', {class: 'num'}, formatQty(rows.reduce((a, r) => a + r.line.qty, 0))), el('td', {class: 'num'}, 'X'),
+        el('td', {class: 'num'}, money0(sumOf(rows, 'net'))), el('td', {class: 'num'}, 'X'),
+        el('td', {class: 'num'}, vatPayer ? money0(sumOf(rows, 'vat')) : '-'), el('td', {class: 'num'}, money0(total)));
+
+    render(view, formToolbar(doc), el('div', {class: 'form-sheet landscape'},
+        el('div', {class: 'f-form-code'}, 'Унифицированная форма № ТОРГ-12', el('br'), 'Утверждена постановлением Госкомстата России от 25.12.98 № 132'),
+        el('div', {class: 'f-top'},
+            el('table', {class: 'f-parties'}, el('tbody', {},
+                party('', orgFull(s), 'организация-грузоотправитель, адрес, телефон, факс, банковские реквизиты'),
+                party('', '', 'структурное подразделение'),
+                party('Грузополучатель', partnerFull(partner), 'организация, адрес, телефон, факс, банковские реквизиты'),
+                party('Поставщик', orgFull(s), 'организация, адрес, телефон, факс, банковские реквизиты'),
+                party('Плательщик', partnerFull(partner), 'организация, адрес, телефон, факс, банковские реквизиты'),
+                party('Основание', doc.comment, 'договор, заказ-наряд'))),
+            el('table', {class: 'f-codes'}, el('tbody', {},
+                el('tr', {}, el('td'), el('td', {class: 'f-code-head'}, 'Коды')),
+                ...[['Форма по ОКУД', '0330212'], ['по ОКПО', s.org_okpo], ['Вид деятельности по ОКДП', ''], ['по ОКПО', ''],
+                    ['по ОКПО', s.org_okpo], ['по ОКПО', ''], ['номер', ''], ['дата', ''], ['Транспортная накладная номер', ''],
+                    ['дата', ''], ['Вид операции', '']].map(([k, v]) => el('tr', {}, el('td', {class: 'right'}, k), el('td', {class: 'f-code'}, v)))))),
+        el('table', {class: 'f-docno'}, el('tbody', {},
+            el('tr', {}, el('td', {rowspan: 2, class: 'f-doc-title'}, 'ТОВАРНАЯ НАКЛАДНАЯ'), el('th', {}, 'Номер документа'), el('th', {}, 'Дата составления')),
+            el('tr', {}, el('td', {class: 'center'}, String(doc.number)), el('td', {class: 'center'}, date)))),
+        el('table', {class: 'f-grid'},
+            el('thead', {},
+                el('tr', {}, head.map(h => el('th', {}, h))),
+                el('tr', {}, head.map((_, i) => el('th', {}, String(i + 1))))),
+            el('tbody', {},
+                rows.map(r => el('tr', {},
+                    el('td', {class: 'center'}, r.n), el('td', {}, r.line.name), el('td'),
+                    el('td', {class: 'center'}, UNITS[r.line.unit]), el('td', {class: 'center'}, OKEI[r.line.unit]), el('td'), el('td'), el('td'), el('td'),
+                    el('td', {class: 'num'}, formatQty(r.line.qty)), el('td', {class: 'num'}, money0(r.price)), el('td', {class: 'num'}, money0(r.net)),
+                    el('td', {class: 'center'}, rateText(r.rate)), el('td', {class: 'num'}, r.rate ? money0(r.vat) : '-'), el('td', {class: 'num'}, money0(r.total)))),
+                totalRow('Итого'),
+                totalRow('Всего по накладной'))),
+        el('p', {}, `Товарная накладная имеет приложение на ____ листах и содержит ${countInWords(rows.length).toLowerCase()} порядковых номеров записей`),
+        el('p', {}, 'Всего отпущено на сумму ', el('strong', {}, moneyInWords(total))),
+        el('div', {class: 'f-sign-cols'},
+            el('div', {},
+                el('p', {}, 'Отпуск груза разрешил ', signField('должность', 'Руководитель'), signField('подпись'), signField('расшифровка подписи', s.director)),
+                el('p', {}, 'Главный (старший) бухгалтер ', signField('подпись'), signField('расшифровка подписи', s.accountant)),
+                el('p', {}, 'Отпуск груза произвел ', signField('должность'), signField('подпись'), signField('расшифровка подписи', s.storekeeper)),
+                el('p', {}, 'М.П.          «____» ______________ 20___ года')),
+            el('div', {},
+                el('p', {}, 'По доверенности № ________ от «____» ______________ 20___ года'),
+                el('p', {}, 'выданной ', signField('кем, кому (организация, должность, фамилия, и. о.)')),
+                el('p', {}, 'Груз принял ', signField('должность'), signField('подпись'), signField('расшифровка подписи')),
+                el('p', {}, 'Груз получил грузополучатель ', signField('должность'), signField('подпись'), signField('расшифровка подписи')),
+                el('p', {}, 'М.П.          «____» ______________ 20___ года')))));
+}
+
+/**
+ * Универсальный передаточный документ: статус 1 (счёт-фактура и передаточный документ) для плательщика НДС,
+ * иначе статус 2 (только передаточный документ).
+ */
+function renderUpd(view, doc, s, partner, items) {
+    const vatPayer = s.vat_payer === '1';
+    const rows = vatLines(doc, items, vatPayer);
+    const date = humanDate(doc.date).split(',')[0];
+    const field = (label, value, code) => el('tr', {}, el('td', {class: 'f-label'}, label), el('td', {class: 'f-value'}, value), el('td', {class: 'f-num'}, code));
+    const innKpp = (inn, kpp) => [inn, kpp].filter(Boolean).join('/');
+    const head = [['№ п/п', 'А'], ['Код товара/ работ, услуг', 'Б'], ['Наименование товара (описание выполненных работ, оказанных услуг), имущественного права', '1'],
+        ['Код вида товара', '1а'], ['Единица измерения: код', '2'], ['Единица измерения: условное обозначение (национальное)', '2а'],
+        ['Количество (объем)', '3'], ['Цена (тариф) за единицу измерения', '4'],
+        ['Стоимость товаров (работ, услуг), имущественных прав без налога - всего', '5'], ['В том числе сумма акциза', '6'],
+        ['Налоговая ставка', '7'], ['Сумма налога, предъявляемая покупателю', '8'],
+        ['Стоимость товаров (работ, услуг), имущественных прав с налогом - всего', '9'],
+        ['Страна происхождения товара: цифровой код', '10'], ['Страна происхождения товара: краткое наименование', '10а'],
+        ['Регистрационный номер декларации на товары или регистрационный номер партии товара, подлежащего прослеживаемости', '11'],
+        ['Количественная единица измерения товара, используемая в целях осуществления прослеживаемости: код', '12'],
+        ['Количественная единица измерения ...: условное обозначение', '12а'], ['Количество товара, подлежащего прослеживаемости', '13'],
+        ['Стоимость товара, подлежащего прослеживаемости, без НДС, в рублях', '14']];
+
+    render(view, formToolbar(doc), el('div', {class: 'form-sheet landscape upd'},
+        el('div', {class: 'f-top'},
+            el('div', {class: 'upd-left'},
+                el('div', {class: 'upd-title'}, 'Универсальный передаточный документ'),
+                el('div', {}, 'Статус: ', el('span', {class: 'upd-status'}, vatPayer ? '1' : '2')),
+                el('div', {class: 'f-caption'}, '1 - счет-фактура и передаточный документ (акт)', el('br'), '2 - передаточный документ (акт)')),
+            el('table', {class: 'f-parties upd-head'}, el('tbody', {},
+                field(el('strong', {}, 'Счет-фактура №'), `${doc.number} от ${date}`, '(1)'),
+                field('Исправление №', '-- от --', '(1а)'),
+                field(el('strong', {}, 'Продавец'), s.org_name, '(2)'),
+                field('Адрес', s.org_address, '(2а)'),
+                field('ИНН/КПП продавца', innKpp(s.org_inn, s.org_kpp), '(2б)'),
+                field('Грузоотправитель и его адрес', 'он же', '(3)'),
+                field('Грузополучатель и его адрес', partner ? [partner.name, partner.address].filter(Boolean).join(', ') : '', '(4)'),
+                field('К платежно-расчетному документу №', '-- от --', '(5)'),
+                field('Документ об отгрузке', `№ п/п 1-${rows.length} № ${doc.number} от ${date}`, '(5а)'),
+                field(el('strong', {}, 'Покупатель'), partner ? partner.name : '', '(6)'),
+                field('Адрес', partner ? partner.address : '', '(6а)'),
+                field('ИНН/КПП покупателя', partner ? innKpp(partner.inn, partner.kpp) : '', '(6б)'),
+                field('Валюта: наименование, код', 'Российский рубль, 643', '(7)'),
+                field('Идентификатор государственного контракта, договора (соглашения) (при наличии)', '', '(8)')))),
+        el('table', {class: 'f-grid'},
+            el('thead', {},
+                el('tr', {}, head.map(([h]) => el('th', {}, h))),
+                el('tr', {}, head.map(([, n]) => el('th', {}, n)))),
+            el('tbody', {},
+                rows.map(r => el('tr', {},
+                    el('td', {class: 'center'}, r.n), el('td', {class: 'center'}, '--'), el('td', {}, r.line.name), el('td', {class: 'center'}, '--'),
+                    el('td', {class: 'center'}, OKEI[r.line.unit]), el('td', {class: 'center'}, UNITS[r.line.unit]),
+                    el('td', {class: 'num'}, formatQty(r.line.qty)), el('td', {class: 'num'}, money0(r.price)), el('td', {class: 'num'}, money0(r.net)),
+                    el('td', {class: 'center'}, 'без акциза'), el('td', {class: 'center'}, rateText(r.rate)),
+                    el('td', {class: 'num'}, r.rate ? money0(r.vat) : 'без НДС'), el('td', {class: 'num'}, money0(r.total)),
+                    el('td', {class: 'center'}, '--'), el('td', {class: 'center'}, '--'), el('td', {class: 'center'}, '--'),
+                    el('td', {class: 'center'}, '--'), el('td', {class: 'center'}, '--'), el('td', {class: 'center'}, '--'), el('td', {class: 'center'}, '--'))),
+                el('tr', {class: 'f-total'},
+                    el('td', {colspan: 8}, el('strong', {}, 'Всего к оплате (9)')), el('td', {class: 'num'}, money0(sumOf(rows, 'net'))),
+                    el('td', {colspan: 2, class: 'center'}, 'X'), el('td', {class: 'num'}, vatPayer ? money0(sumOf(rows, 'vat')) : 'без НДС'),
+                    el('td', {class: 'num'}, money0(sumOf(rows, 'total'))), el('td', {colspan: 7})))),
+        el('div', {class: 'f-sign-cols'},
+            el('div', {},
+                el('p', {}, 'Руководитель организации или иное уполномоченное лицо ', signField('подпись'), signField('ф.и.о.', s.director)),
+                el('p', {}, 'Индивидуальный предприниматель или иное уполномоченное лицо ', signField('подпись'), signField('ф.и.о.'))),
+            el('div', {},
+                el('p', {}, 'Главный бухгалтер или иное уполномоченное лицо ', signField('подпись'), signField('ф.и.о.', s.accountant)),
+                el('p', {}, signField('реквизиты свидетельства о государственной регистрации индивидуального предпринимателя')))),
+        el('table', {class: 'f-parties upd-bottom'}, el('tbody', {},
+            el('tr', {}, el('td', {colspan: 2}, 'Основание передачи (сдачи) / получения (приемки) ', signField('договор; доверенность и др.', doc.comment), ' [8]')),
+            el('tr', {}, el('td', {colspan: 2}, 'Данные о транспортировке и грузе ', signField('транспортная накладная, поручение экспедитору, экспедиторская / складская расписка и др. / масса нетто/ брутто груза, если не приведены ссылки на транспортные документы, содержащие эти сведения'), ' [9]')),
+            el('tr', {},
+                el('td', {},
+                    el('p', {}, 'Товар (груз) передал / услуги, результаты работ, права сдал [10]'),
+                    el('p', {}, signField('должность'), signField('подпись'), signField('ф.и.о.', s.storekeeper)),
+                    el('p', {}, 'Дата отгрузки, передачи (сдачи) [11] ', el('span', {class: 'f-line'}, date)),
+                    el('p', {}, 'Иные сведения об отгрузке, передаче [12] ', signField('ссылки на неотъемлемые приложения, сопутствующие документы, иные документы и т.п.')),
+                    el('p', {}, 'Ответственный за правильность оформления факта хозяйственной жизни [13]'),
+                    el('p', {}, signField('должность'), signField('подпись'), signField('ф.и.о.', s.accountant)),
+                    el('p', {}, 'Наименование экономического субъекта – составителя документа (в т.ч. комиссионера / агента) [14]'),
+                    el('p', {}, el('span', {class: 'f-line'}, [s.org_name, innKpp(s.org_inn, s.org_kpp) && 'ИНН/КПП ' + innKpp(s.org_inn, s.org_kpp)].filter(Boolean).join(', '))),
+                    el('p', {}, 'М.П.')),
+                el('td', {},
+                    el('p', {}, 'Товар (груз) получил / услуги, результаты работ, права принял [15]'),
+                    el('p', {}, signField('должность'), signField('подпись'), signField('ф.и.о.')),
+                    el('p', {}, 'Дата получения (приемки) [16] ', el('span', {class: 'f-line'}, '«____» ______________ 20___ г.')),
+                    el('p', {}, 'Иные сведения о получении, приемке [17] ', signField('информация о наличии/отсутствии претензии; ссылки на неотъемлемые приложения, и другие документы и т.п.')),
+                    el('p', {}, 'Ответственный за правильность оформления факта хозяйственной жизни [18]'),
+                    el('p', {}, signField('должность'), signField('подпись'), signField('ф.и.о.')),
+                    el('p', {}, 'Наименование экономического субъекта – составителя документа [19]'),
+                    el('p', {}, el('span', {class: 'f-line'}, partner ? [partner.name, innKpp(partner.inn, partner.kpp) && 'ИНН/КПП ' + innKpp(partner.inn, partner.kpp)].filter(Boolean).join(', ') : '')),
+                    el('p', {}, 'М.П.')))))));
 }
 
 // ---------- остатки ----------
@@ -1382,7 +1603,7 @@ async function route() {
         } else if (hash === '#/docs') {
             await renderDocs(view, params);
         } else if ((m = hash.match(/^#\/print\/(\d+)$/))) {
-            await renderPrint(view, Number(m[1]));
+            await renderPrint(view, Number(m[1]), params);
         } else if (hash === '#/settings') {
             await renderSettings(view);
         } else if (hash === '#/partners') {
