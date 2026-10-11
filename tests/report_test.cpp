@@ -119,3 +119,66 @@ TEST_F(ReportTest, Group) {
     EXPECT_THAT(r.items[0].name, StrEq("Торт"));
     EXPECT_TRUE(r.outgoing.empty()) << "реализация и списание были только по батону";
 }
+
+/**
+ * @brief Вторая оценка по типу цен: каждое движение по цене на момент документа.
+ *
+ * «Розница»: батон 45,00 с 01.10, 50,00 с 13.10; торта нет. Начало (до 12.10): 40 × 45 = 1 800,00;
+ * приход: возврат 13.10 5 × 50 = 250,00; расход: реализация 12.10 30 × 45 = 1 350,00, списание
+ * 14.10 2 × 50 = 100,00; конец 1 800 + 250 - 1 450 = 600,00.
+ */
+TEST_F(ReportTest, PriceTypeColumn) {
+    Prices prices{m_db};
+    auto const retail = prices.create_type("Розница");
+    for (auto const &[date, price] : {std::pair{"2026-10-01", 4500}, std::pair{"2026-10-13", 5000}}) {
+        Document d;
+        d.type = DocType::PRICES;
+        d.date = date;
+        d.price_type_id = retail;
+        DocLine l;
+        l.item_id = m_bread;
+        l.price_kop = price;
+        d.lines = {l};
+        m_docs.post(m_docs.create(d));
+    }
+    auto const r = goods_report(m_db, "2026-10-12", "2026-10-14", std::nullopt, retail);
+    EXPECT_EQ(r.opening_price_sum, 180000);
+    EXPECT_EQ(r.in_price_sum, 25000);
+    EXPECT_EQ(r.out_price_sum, 145000);
+    EXPECT_EQ(r.closing_price_sum, 60000);
+    ASSERT_EQ(r.outgoing.size(), 2U);
+    EXPECT_EQ(r.outgoing[0].price_sum, 135000) << "реализация 12.10 по 45,00";
+    EXPECT_EQ(r.outgoing[1].price_sum, 10000) << "списание 14.10 по 50,00";
+    EXPECT_EQ(r.moves_without_price, 1) << "поступление торта: торта нет в «Рознице»";
+    EXPECT_EQ(r.closing_sum, 40560) << "себестоимость считается как прежде";
+
+    auto const plain = goods_report(m_db, "2026-10-12", "2026-10-14");
+    EXPECT_FALSE(plain.price_type_id);
+    EXPECT_EQ(plain.closing_price_sum, 0) << "без типа цен вторая оценка не считается";
+}
+
+/**
+ * @brief Остаток на начало по типу цен складывается из интервалов действия цен до периода.
+ *
+ * «Розница»: 45,00 с 01.10, 50,00 с 11.10. До периода 12.10: поступление 10.10 40 × 45 = 1 800,00 и
+ * списание 11.10 1 × 50 = 50,00; начало = 1 750,00 (не 39 × текущую цену).
+ */
+TEST_F(ReportTest, OpeningByPriceIntervals) {
+    m_docs.post(m_docs.create(make_doc(DocType::WRITEOFF, "2026-10-11", {{m_bread, 1000}}, "брак")));
+    Prices prices{m_db};
+    auto const retail = prices.create_type("Розница");
+    for (auto const &[date, price] : {std::pair{"2026-10-01", 4500}, std::pair{"2026-10-11", 5000}}) {
+        Document d;
+        d.type = DocType::PRICES;
+        d.date = date;
+        d.price_type_id = retail;
+        DocLine l;
+        l.item_id = m_bread;
+        l.price_kop = price;
+        d.lines = {l};
+        m_docs.post(m_docs.create(d));
+    }
+    auto const r = goods_report(m_db, "2026-10-12", "2026-10-14", std::nullopt, retail);
+    EXPECT_EQ(r.opening_price_sum, 175000);
+    EXPECT_EQ(r.closing_price_sum, r.opening_price_sum + r.in_price_sum - r.out_price_sum);
+}

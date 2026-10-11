@@ -1,5 +1,6 @@
 // Товарный отчёт: себестоимость батона 31,20; 10.10 поступило 40, 12.10 продано 30, 13.10 списано 2.
-// Отчёт за 12-13.10: начало 1 248,00, расход 936,00 + 62,40, конец 249,60; кнопка из «Остатков».
+// Отчёт за 12-13.10: начало 1 248,00, расход 936,00 + 62,40, конец 249,60; кнопка из «Остатков»;
+// приложения по позициям нет; выбор типа цен «Опт» добавляет колонку (цен «Опт» нет - нули и предупреждение).
 const post = async (path, body) => {
     const res = await fetch('/api/' + path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
     const data = await res.json();
@@ -22,8 +23,19 @@ await sleep(700);
 const text = document.querySelector('.print-sheet').innerText.replace(/ /g, ' ');
 for (const [what, re] of [['начало', /Остаток на 12\.10\.2026\s+1 248,00/], ['реализация', /Реализация\s+12\.10\.2026 00:00\s+1\s+936,00/],
     ['списание', /Списание\s+13\.10\.2026 00:00\s+1\s+62,40/], ['расход', /Итого по расходу\s+998,40/], ['конец', /Остаток на 13\.10\.2026\s+249,60/],
-    ['приложение', /Батон\s+40 шт\s+1 248,00\s+32 шт\s+8 шт\s+249,60/], ['документов', /Приложение: 2 документа/]]) {
+    ['документов', /Приложение: 2 документа/]]) {
     expect(re.test(text), `${what}: не найдено в отчёте\n` + text.slice(0, 600));
 }
 expect(!document.querySelector('.warnings'), 'предупреждение о себестоимости при полной себестоимости');
 log.push('отчёт: 1 248,00 - 998,40 = 249,60, приложение по батону');
+
+expect(!text.includes('движение по позициям'), 'приложение по позициям должно быть убрано');
+const select = [...document.querySelectorAll('.toolbar select')][1];
+select.value = String(v1);
+select.dispatchEvent(new Event('change'));
+await sleep(700);
+const withPrice = document.querySelector('.print-sheet').innerText.replace(/\u00a0/g, ' ');
+expect(withPrice.includes('Сумма по ценам «Опт», ₽'), 'нет колонки по типу цен');
+expect(/Реализация\s+12\.10\.2026 00:00\s+1\s+936,00\s+0,00/.test(withPrice), 'строка реализации с колонкой «Опт»: ' + withPrice.slice(withPrice.indexOf('Реализация'), withPrice.indexOf('Реализация') + 60));
+expect(document.querySelector('.warnings') && document.querySelector('.warnings').textContent.includes('без цены «Опт»'), 'нет предупреждения о движениях без цены');
+log.push('колонка «Опт» добавлена, батона в «Опт» нет - предупреждение');

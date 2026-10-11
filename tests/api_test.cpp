@@ -560,6 +560,9 @@ TEST(ApiReport, Goods) {
     EXPECT_EQ(r.body.at("closing_sum"), 124800);
     EXPECT_EQ(r.body.at("incoming").at(0).at("type"), "production");
     EXPECT_EQ(r.body.at("items").at(0).at("closing"), 40000);
+    r = CALL(srv, "GET", "/api/report/goods?from=2026-10-10&to=2026-10-12&price_type=1");
+    EXPECT_EQ(r.body.at("closing_price_sum"), 124800) << "по типу «Себестоимость» на момент: " << r.body;
+    EXPECT_EQ(CALL(srv, "GET", "/api/report/goods?from=2026-10-10&to=2026-10-12&price_type=99").status, 404);
     EXPECT_EQ(CALL(srv, "GET", "/api/report/goods?from=2026-10-12&to=2026-10-10").status, 400);
     EXPECT_EQ(CALL(srv, "GET", "/api/report/goods?from=x&to=2026-10-10").status, 400);
 }

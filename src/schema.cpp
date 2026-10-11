@@ -8,7 +8,7 @@
 namespace {
 
 /// Миграции схемы. Применённую миграцию не менять: изменения только новой миграцией в конце.
-constexpr std::array<std::string_view, 9> MIGRATIONS = {
+constexpr std::array<std::string_view, 10> MIGRATIONS = {
     // 1: справочники, документы, движения склада
     R"sql(
 CREATE TABLE items (
@@ -165,6 +165,15 @@ DELETE FROM stock_moves WHERE qty = 0 AND doc_id IN (SELECT id FROM docs WHERE t
     // 9: область инвентаризации - группа (с подгруппами); пусто - вся продукция
     R"sql(
 ALTER TABLE docs ADD COLUMN group_id INTEGER REFERENCES groups (id);
+)sql",
+    // 10: себестоимость за единицу в движении (копия из строки документа) и в покрывающем индексе:
+    // стоимость остатка считается по индексу без обращения к строкам документов; индекс по дате для периода
+    R"sql(
+ALTER TABLE stock_moves ADD COLUMN cost_kop INTEGER;
+UPDATE stock_moves SET cost_kop = (SELECT l.cost_kop FROM doc_lines l WHERE l.doc_id = stock_moves.doc_id AND l.item_id = stock_moves.item_id);
+DROP INDEX stock_moves_cover;
+CREATE INDEX stock_moves_cover ON stock_moves (item_id, date, qty, cost_kop);
+CREATE INDEX stock_moves_date ON stock_moves (date);
 )sql",
 };
 

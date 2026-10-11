@@ -594,14 +594,22 @@ void Documents::write_moves(Document const &doc) {
         for (auto const &b : Stock{m_db}.balances(moment(doc), doc.group_id, doc.id)) {
             diff[b.item_id] -= b.qty;
         }
+        std::map<std::int64_t, std::optional<std::int64_t>> cost;
         for (auto const &line : doc.lines) {
             diff[line.item_id] += line.qty;
+            cost[line.item_id] = line.cost_kop;
         }
-        auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (?, ?, ?, ?)");
+        Prices const prices{m_db};
+        auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date, cost_kop) VALUES (?, ?, ?, ?, ?)");
         for (auto const &[item, qty] : diff) {
             if (qty != 0) {
                 ins.reset();
                 ins.bind(1, doc.id).bind(2, item).bind(3, qty).bind(4, moment(doc));
+                // обнуляемые позиции не в строках: себестоимость на момент документа
+                auto const c = cost.contains(item) ? cost.at(item) : prices.price(COST_PRICE_TYPE, item, moment(doc));
+                if (c) {
+                    ins.bind(5, *c);
+                }
                 ins.step();
             }
         }
@@ -611,10 +619,13 @@ void Documents::write_moves(Document const &doc) {
         // установка цен проводится без складских движений
         return;
     }
-    auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (?, ?, ?, ?)");
+    auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date, cost_kop) VALUES (?, ?, ?, ?, ?)");
     for (auto const &line : doc.lines) {
         ins.reset();
         ins.bind(1, doc.id).bind(2, line.item_id).bind(3, sign * line.qty).bind(4, moment(doc));
+        if (line.cost_kop) {
+            ins.bind(5, *line.cost_kop);
+        }
         ins.step();
     }
 }

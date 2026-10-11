@@ -1609,31 +1609,43 @@ async function renderReport(view, params) {
     const from = params.get('from') || today.slice(0, 8) + '01';
     const to = params.get('to') || today;
     const groupId = params.get('group') ? Number(params.get('group')) : null;
-    const [report, settings, groups] = await Promise.all([
-        api('GET', `report/goods?from=${from}&to=${to}` + (groupId ? '&group=' + groupId : '')),
+    const priceTypeId = params.get('price_type') ? Number(params.get('price_type')) : null;
+    const [report, settings, groups, priceTypes] = await Promise.all([
+        api('GET', `report/goods?from=${from}&to=${to}` + (groupId ? '&group=' + groupId : '') + (priceTypeId ? '&price_type=' + priceTypeId : '')),
         api('GET', 'settings'),
         api('GET', 'groups'),
+        api('GET', 'price-types'),
     ]);
-    const go = (f, t, g) => { location.hash = `#/report?from=${f}&to=${t}` + (g ? '&group=' + g : ''); };
+    const priceType = priceTypes.find(t => t.id === priceTypeId);
+    const go = changes => {
+        const p = {from, to, group: groupId, price_type: priceTypeId, ...changes};
+        location.hash = '#/report?' + Object.entries(p).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join('&');
+    };
     const d = iso => humanDate(iso).split(',')[0];
+    const money = (cost, price) => [el('td', {class: 'num'}, formatMoney(cost)), priceType ? el('td', {class: 'num'}, formatMoney(price)) : null];
     const docRow = r => el('tr', {},
         el('td', {}, DOC_TYPES[r.type].title + (r.partner_name ? ', ' + r.partner_name : '')),
         el('td', {class: 'center'}, d(r.date) + ' ' + r.time),
         el('td', {class: 'center'}, el('a', {href: '#/docs/' + r.id}, String(r.number))),
-        el('td', {class: 'num'}, formatMoney(r.sum)),
+        money(r.sum, r.price_sum),
         el('td'));
-    const sumRow = (text, sum, strong = true) => el('tr', {class: strong ? 'f-total' : null},
-        el('td', {colspan: 3}, text), el('td', {class: 'num'}, formatMoney(sum)), el('td'));
-    const qtyCell = (qty, unit) => el('td', {class: 'num'}, qty ? formatQty(qty) + ' ' + UNITS[unit] : '');
+    const sumRow = (text, cost, price) => el('tr', {class: 'f-total'}, el('td', {colspan: 3}, text), money(cost, price), el('td'));
+    const section = text => el('tr', {}, el('td', {colspan: priceType ? 6 : 5}, el('strong', {}, text)));
+    const docs = report.incoming.length + report.outgoing.length;
 
     render(view,
         el('div', {class: 'toolbar no-print'},
-            'с', el('input', {type: 'date', value: from, onchange: e => e.target.value && go(e.target.value, to, groupId)}),
-            'по', el('input', {type: 'date', value: to, onchange: e => e.target.value && go(from, e.target.value, groupId)}),
-            'группа', el('select', {onchange: e => go(from, to, selectValue(e.target))}, groupOptions(groups, groupId, 'все')),
+            'с', el('input', {type: 'date', value: from, onchange: e => e.target.value && go({from: e.target.value})}),
+            'по', el('input', {type: 'date', value: to, onchange: e => e.target.value && go({to: e.target.value})}),
+            'группа', el('select', {onchange: e => go({group: selectValue(e.target)})}, groupOptions(groups, groupId, 'все')),
+            'и по ценам', el('select', {onchange: e => go({price_type: selectValue(e.target)})},
+                el('option', {value: '', selected: !priceTypeId}, '— только себестоимость —'),
+                priceTypes.filter(t => !t.system).map(t => el('option', {value: t.id, selected: t.id === priceTypeId}, t.name))),
             el('button', {class: 'primary', onclick: () => window.print()}, 'Печать')),
         report.lines_without_cost ? el('div', {class: 'warnings no-print'},
-            `⚠ строк документов без себестоимости: ${report.lines_without_cost}, они оценены нулём. Установите себестоимость и перепроведите документы.`) : null,
+            `⚠ движений без себестоимости: ${report.lines_without_cost}, они оценены нулём. Установите себестоимость и перепроведите документы.`) : null,
+        priceType && report.moves_without_price ? el('div', {class: 'warnings no-print'},
+            `⚠ движений без цены «${priceType.name}»: ${report.moves_without_price}, по этому типу они оценены нулём.`) : null,
         el('div', {class: 'print-sheet'},
             el('p', {class: 'print-org'}, requisitesLine(settings.org_name || 'Организация не указана', settings.org_inn, settings.org_kpp, settings.org_address)),
             el('h2', {class: 'print-title'}, `Товарный отчёт за период с ${d(from)} по ${d(to)}`),
@@ -1642,33 +1654,23 @@ async function renderReport(view, params) {
             el('table', {class: 'print-table'},
                 el('thead', {}, el('tr', {},
                     el('th', {}, 'Наименование'), el('th', {}, 'Дата'), el('th', {}, 'Номер'),
-                    el('th', {class: 'num'}, 'Сумма, ₽'), el('th', {}, 'Отметки бухгалтерии'))),
+                    el('th', {class: 'num'}, 'Сумма по себестоимости, ₽'),
+                    priceType ? el('th', {class: 'num'}, `Сумма по ценам «${priceType.name}», ₽`) : null,
+                    el('th', {}, 'Отметки бухгалтерии'))),
                 el('tbody', {},
-                    sumRow(`Остаток на ${d(from)}`, report.opening_sum),
-                    el('tr', {}, el('td', {colspan: 5}, el('strong', {}, 'Приход'))),
+                    sumRow(`Остаток на ${d(from)}`, report.opening_sum, report.opening_price_sum),
+                    section('Приход'),
                     report.incoming.map(docRow),
-                    sumRow('Итого по приходу', report.in_sum),
-                    sumRow('Итого с остатком', report.opening_sum + report.in_sum),
-                    el('tr', {}, el('td', {colspan: 5}, el('strong', {}, 'Расход'))),
+                    sumRow('Итого по приходу', report.in_sum, report.in_price_sum),
+                    sumRow('Итого с остатком', report.opening_sum + report.in_sum, report.opening_price_sum + report.in_price_sum),
+                    section('Расход'),
                     report.outgoing.map(docRow),
-                    sumRow('Итого по расходу', report.out_sum),
-                    sumRow(`Остаток на ${d(to)}`, report.closing_sum))),
-            (n => el('p', {}, `Приложение: ${n} ${plural(n, ['документ', 'документа', 'документов'])}`))(report.incoming.length + report.outgoing.length),
+                    sumRow('Итого по расходу', report.out_sum, report.out_price_sum),
+                    sumRow(`Остаток на ${d(to)}`, report.closing_sum, report.closing_price_sum))),
+            el('p', {}, `Приложение: ${docs} ${plural(docs, ['документ', 'документа', 'документов'])}`),
             el('div', {class: 'print-signs'},
                 el('div', {}, 'Отчёт с документами принял и проверил ____________________ /' + (settings.accountant || '____________') + '/'),
-                el('div', {}, 'Материально ответственное лицо ____________________ /' + (settings.storekeeper || '____________') + '/')),
-            el('h3', {}, 'Приложение: движение по позициям'),
-            el('table', {class: 'print-table'},
-                el('thead', {}, el('tr', {},
-                    el('th', {}, 'Позиция'), el('th', {class: 'num'}, `Остаток на ${d(from)}`), el('th', {class: 'num'}, 'Сумма, ₽'),
-                    el('th', {class: 'num'}, 'Приход'), el('th', {class: 'num'}, 'Расход'),
-                    el('th', {class: 'num'}, `Остаток на ${d(to)}`), el('th', {class: 'num'}, 'Сумма, ₽'))),
-                el('tbody', {}, report.items.length ? report.items.map(i => el('tr', {},
-                    el('td', {}, i.name),
-                    qtyCell(i.opening, i.unit), el('td', {class: 'num'}, formatMoney(i.opening_sum)),
-                    qtyCell(i.in, i.unit), qtyCell(i.out, i.unit),
-                    qtyCell(i.closing, i.unit), el('td', {class: 'num'}, formatMoney(i.closing_sum))))
-                    : el('tr', {}, el('td', {colspan: 7, class: 'muted'}, 'Движений и остатков нет'))))));
+                el('div', {}, 'Материально ответственное лицо ____________________ /' + (settings.storekeeper || '____________') + '/'))));
 }
 
 // ---------- остатки ----------

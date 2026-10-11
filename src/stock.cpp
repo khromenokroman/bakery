@@ -39,7 +39,8 @@ Stock::Stock(Database &db) : m_db{db} {}
 std::vector<Balance> Stock::balances(std::optional<std::string> const &date, std::optional<std::int64_t> group,
                                      std::optional<std::int64_t> exclude_doc) const {
     auto stmt = m_db.prepare(
-        "SELECT m.item_id, i.name, i.unit, i.archived, sum(m.qty), i.group_id FROM stock_moves m JOIN items i ON i.id = m.item_id "
+        "SELECT m.item_id, i.name, i.unit, i.archived, sum(m.qty), i.group_id FROM stock_moves m INDEXED BY stock_moves_cover JOIN items i ON i.id = "
+        "m.item_id "
         "WHERE (?1 IS NULL OR m.date <= ?1) AND (?2 IS NULL OR i.group_id IN (WITH RECURSIVE sub(id) AS (SELECT ?2 UNION SELECT g.id FROM groups g "
         "JOIN sub ON g.parent_id = sub.id) SELECT id FROM sub)) "
         "AND (?3 IS NULL OR m.doc_id <> ?3) GROUP BY m.item_id HAVING sum(m.qty) <> 0 ORDER BY i.name");

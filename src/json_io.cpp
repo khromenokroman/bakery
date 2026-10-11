@@ -308,6 +308,7 @@ nlohmann::json to_json(GoodsReport const &report) {
                 {"time", d.time.substr(0, 5)},
                 {"partner_name", d.partner_name},
                 {"sum", d.sum},
+                {"price_sum", d.price_sum},
             });
         }
         return out;
@@ -332,6 +333,12 @@ nlohmann::json to_json(GoodsReport const &report) {
         {"out_sum", report.out_sum},
         {"closing_sum", report.closing_sum},
         {"lines_without_cost", report.lines_without_cost},
+        {"price_type_id", optional_json(report.price_type_id)},
+        {"opening_price_sum", report.opening_price_sum},
+        {"in_price_sum", report.in_price_sum},
+        {"out_price_sum", report.out_price_sum},
+        {"closing_price_sum", report.closing_price_sum},
+        {"moves_without_price", report.moves_without_price},
         {"incoming", docs(report.incoming)},
         {"outgoing", docs(report.outgoing)},
         {"items", items},
