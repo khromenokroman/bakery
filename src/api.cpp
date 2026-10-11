@@ -65,7 +65,8 @@ std::int64_t path_id(httplib::Request const &req) {
 
 } // namespace
 
-Api::Api(Database &db, std::string web_dir) : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_groups{db}, m_docs{db}, m_stock{db}, m_db{db} {}
+Api::Api(Database &db, std::string web_dir)
+    : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_groups{db}, m_prices{db}, m_docs{db}, m_stock{db}, m_db{db} {}
 
 Api::Handler Api::guarded(Handler handler) {
     return [this, handler = std::move(handler)](httplib::Request const &req, httplib::Response &res) {
@@ -87,6 +88,7 @@ void Api::register_routes(httplib::Server &server) {
     register_catalog(server);
     register_docs(server);
     register_groups(server);
+    register_prices(server);
 
     if (!m_web_dir.empty() && !server.set_mount_point("/", m_web_dir)) {
         throw std::runtime_error("каталог веб-интерфейса не найден: " + m_web_dir);
@@ -283,4 +285,45 @@ void Api::register_groups(httplib::Server &server) {
                       m_groups.remove(path_id(req));
                       send_json(res, nlohmann::json::object());
                   }));
+}
+
+void Api::register_prices(httplib::Server &server) {
+    server.Get("/api/price-types", guarded([this](httplib::Request const &, httplib::Response &res) {
+                   auto out = nlohmann::json::array();
+                   for (auto const &t : m_prices.types()) {
+                       out.push_back(to_json(t));
+                   }
+                   send_json(res, out);
+               }));
+
+    server.Post("/api/price-types", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                    auto const id = m_prices.create_type(get_string(parse_object(req.body), "name"));
+                    send_json(res, to_json(m_prices.type(id)), 201);
+                }));
+
+    server.Put("/api/price-types/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto const id = path_id(req);
+                   m_prices.rename_type(id, get_string(parse_object(req.body), "name"));
+                   send_json(res, to_json(m_prices.type(id)));
+               }));
+
+    server.Delete("/api/price-types/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                      m_prices.remove_type(path_id(req));
+                      send_json(res, nlohmann::json::object());
+                  }));
+
+    server.Get("/api/prices", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   if (!req.has_param("type")) {
+                       throw UserError("не указан тип цен (type)");
+                   }
+                   auto const type = query_id(req, "type");
+                   (void)m_prices.type(type);
+                   auto const date = req.get_param_value("date");
+                   check_date(date);
+                   auto out = nlohmann::json::array();
+                   for (auto const &row : m_prices.price_list(type, date)) {
+                       out.push_back(to_json(row));
+                   }
+                   send_json(res, out);
+               }));
 }

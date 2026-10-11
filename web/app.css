@@ -181,6 +181,11 @@ input, select, button {
     color: var(--fg);
 }
 
+input.money {
+    width: 8em;
+    text-align: right;
+}
+
 input.qty {
     width: 7em;
     text-align: right;

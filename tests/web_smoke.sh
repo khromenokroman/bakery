@@ -42,6 +42,9 @@ O1=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"lines\":[{\"i
 P1=$(call POST docs "{\"type\":\"production\",\"date\":\"2026-10-12\",\"lines\":[{\"item_id\":$BREAD,\"qty\":10000}]}" | id)
 P2=$(call POST docs "{\"type\":\"production\",\"date\":\"2026-10-12\",\"lines\":[{\"item_id\":$COOKIE,\"qty\":1000}]}" | id)
 call POST "docs/$P2/post" '' >/dev/null
+V1=$(call POST price-types '{"name":"Вариант 1"}' | id)
+PR=$(call POST docs "{\"type\":\"prices\",\"date\":\"2026-10-10\",\"price_type_id\":1,\"lines\":[{\"item_id\":$BREAD,\"price_kop\":3120}]}" | id)
+call POST "docs/$PR/post" '' >/dev/null
 O2=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"comment\":\"Магазин\",\"lines\":[{\"item_id\":$COOKIE,\"qty\":1500}]}" | id)
 
 PAGES=(
@@ -62,6 +65,10 @@ PAGES=(
     "stock?date=2026-10-01"
     "stock?date=2026-10-12&group=$PASTRY"
     "items/$COOKIE"
+    "prices"
+    "prices?type=$V1&date=2026-10-12"
+    "docs/$PR"
+    "docs/new?type=prices&price_type=$V1"
 )
 
 failed=0

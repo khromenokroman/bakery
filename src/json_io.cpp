@@ -114,14 +114,33 @@ Recipe recipe_from_json(nlohmann::json const &j) {
     return recipe;
 }
 
+namespace {
+
+nlohmann::json optional_json(std::optional<std::int64_t> value) { return value ? nlohmann::json(*value) : nlohmann::json(nullptr); }
+
+} // namespace
+
 nlohmann::json to_json(Document const &doc) {
     auto lines = nlohmann::json::array();
     for (auto const &l : doc.lines) {
-        lines.push_back({{"item_id", l.item_id}, {"name", l.name}, {"unit", to_string(l.unit)}, {"qty", l.qty}});
+        lines.push_back({
+            {"item_id", l.item_id},
+            {"name", l.name},
+            {"unit", to_string(l.unit)},
+            {"qty", l.qty},
+            {"price_kop", optional_json(l.price_kop)},
+            {"cost_kop", optional_json(l.cost_kop)},
+        });
     }
     return {
-        {"id", doc.id},         {"type", to_string(doc.type)}, {"number", doc.number}, {"date", doc.date},
-        {"status", doc.status}, {"comment", doc.comment},      {"lines", lines},
+        {"id", doc.id},
+        {"type", to_string(doc.type)},
+        {"number", doc.number},
+        {"date", doc.date},
+        {"status", doc.status},
+        {"comment", doc.comment},
+        {"price_type_id", optional_json(doc.price_type_id)},
+        {"lines", lines},
     };
 }
 
@@ -154,6 +173,7 @@ Document document_from_json(nlohmann::json const &j) {
         doc.type = doc_type_from_string(get_string(j, "type"));
     }
     doc.date = get_string(j, "date");
+    doc.price_type_id = get_optional_id(j, "price_type_id", std::nullopt);
     if (j.contains("comment")) {
         doc.comment = get_string(j, "comment");
     }
@@ -167,7 +187,8 @@ Document document_from_json(nlohmann::json const &j) {
         }
         DocLine line;
         line.item_id = get_int(l, "item_id");
-        line.qty = get_int(l, "qty");
+        line.qty = l.contains("qty") ? get_int(l, "qty") : 0;
+        line.price_kop = get_optional_id(l, "price_kop", std::nullopt);
         doc.lines.push_back(line);
     }
     return doc;
@@ -208,4 +229,13 @@ Group group_from_json(nlohmann::json const &j) {
     g.name = get_string(j, "name");
     g.parent_id = get_optional_id(j, "parent_id", std::nullopt);
     return g;
+}
+
+nlohmann::json to_json(PriceType const &type) { return {{"id", type.id}, {"name", type.name}, {"system", type.system}}; }
+
+nlohmann::json to_json(PriceRow const &row) {
+    return {
+        {"item_id", row.item_id},     {"name", row.name}, {"unit", to_string(row.unit)},
+        {"price_kop", row.price_kop}, {"date", row.date}, {"doc_id", row.doc_id},
+    };
 }

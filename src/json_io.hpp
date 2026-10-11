@@ -8,6 +8,7 @@
 #include "catalog.hpp"
 #include "docs.hpp"
 #include "groups.hpp"
+#include "prices.hpp"
 #include "requirements.hpp"
 #include "stock.hpp"
 
@@ -39,7 +40,7 @@
 [[nodiscard]] nlohmann::json to_json(Requirements const &req);
 
 /**
- * @brief Документ из {"type", "date", "comment", "lines": [{"item_id", "qty"}]}.
+ * @brief Документ из {"type", "date", "comment", "price_type_id", "lines": [{"item_id", "qty", "price_kop"}]}.
  *
  * type необязателен (для изменения существующего документа), comment по умолчанию пустой.
  */
@@ -57,3 +58,6 @@
  * @throws UserError если значение не целое и не null
  */
 [[nodiscard]] std::optional<std::int64_t> get_optional_id(nlohmann::json const &j, std::string_view key, std::optional<std::int64_t> base);
+
+[[nodiscard]] nlohmann::json to_json(PriceType const &type);
+[[nodiscard]] nlohmann::json to_json(PriceRow const &row);

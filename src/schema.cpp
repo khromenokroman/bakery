@@ -1,5 +1,6 @@
 #include "schema.hpp"
 
+#include <algorithm>
 #include <array>
 #include <string>
 #include <string_view>
@@ -7,7 +8,7 @@
 namespace {
 
 /// Миграции схемы. Применённую миграцию не менять: изменения только новой миграцией в конце.
-constexpr std::array<std::string_view, 2> MIGRATIONS = {
+constexpr std::array<std::string_view, 3> MIGRATIONS = {
     // 1: справочники, документы, движения склада
     R"sql(
 CREATE TABLE items (
@@ -97,6 +98,39 @@ CREATE INDEX groups_parent ON groups (parent_id);
 ALTER TABLE items ADD COLUMN group_id INTEGER REFERENCES groups (id);
 CREATE INDEX items_group ON items (group_id);
 )sql",
+    // 3: типы цен, документ «Установка цен», себестоимость в строках.
+    // CHECK у docs.type в SQLite не меняется, поэтому таблица пересобирается (внешние ключи выключены в migrate)
+    R"sql(
+CREATE TABLE price_types (
+    id     INTEGER PRIMARY KEY,
+    name   TEXT    NOT NULL UNIQUE,
+    system INTEGER NOT NULL DEFAULT 0 CHECK (system IN (0, 1))
+);
+INSERT INTO price_types (id, name, system) VALUES (1, 'Себестоимость', 1);
+
+DROP TABLE prices;
+
+CREATE TABLE docs_new (
+    id            INTEGER PRIMARY KEY,
+    type          TEXT    NOT NULL CHECK (type IN ('order', 'production', 'sale', 'return', 'writeoff', 'inventory', 'prices')),
+    number        INTEGER NOT NULL,
+    date          TEXT    NOT NULL,
+    partner_id    INTEGER REFERENCES partners (id),
+    price_type_id INTEGER REFERENCES price_types (id),
+    status        TEXT    NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'posted')),
+    comment       TEXT    NOT NULL DEFAULT '',
+    user_id       INTEGER REFERENCES users (id),
+    UNIQUE (type, number)
+);
+INSERT INTO docs_new (id, type, number, date, partner_id, status, comment, user_id)
+    SELECT id, type, number, date, partner_id, status, comment, user_id FROM docs;
+DROP TABLE docs;
+ALTER TABLE docs_new RENAME TO docs;
+CREATE INDEX docs_date ON docs (date);
+
+ALTER TABLE doc_lines ADD COLUMN cost_kop INTEGER;
+CREATE INDEX doc_lines_item ON doc_lines (item_id);
+)sql",
 };
 
 } // namespace
@@ -109,17 +143,34 @@ int current_schema_version(Database &db) {
     return static_cast<int>(stmt.column_int(0));
 }
 
-int migrate(Database &db) {
+int migrate(Database &db, int target) {
     auto const current = current_schema_version(db);
     if (current > schema_version()) {
         throw DbError("база создана более новой версией программы: схема " + std::to_string(current) + ", поддерживается " +
                       std::to_string(schema_version()));
     }
-    for (auto v = current; v < schema_version(); ++v) {
-        Transaction tx{db};
-        db.exec(MIGRATIONS[static_cast<std::size_t>(v)]);
-        db.exec("PRAGMA user_version = " + std::to_string(v + 1));
-        tx.commit();
+    target = std::min(target, schema_version());
+    if (current >= target) {
+        return current;
     }
-    return schema_version();
+    // процедура изменения схемы SQLite: внешние ключи выключаются вне транзакции, чтобы пересборка
+    // таблицы (DROP + RENAME) не запускала каскадное удаление; целостность проверяется перед COMMIT
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+        for (auto v = current; v < target; ++v) {
+            Transaction tx{db};
+            db.exec(MIGRATIONS[static_cast<std::size_t>(v)]);
+            auto check = db.prepare("PRAGMA foreign_key_check");
+            if (check.step()) {
+                throw DbError("миграция " + std::to_string(v + 1) + " нарушила ссылочную целостность в таблице " + check.column_text(0));
+            }
+            db.exec("PRAGMA user_version = " + std::to_string(v + 1));
+            tx.commit();
+        }
+    } catch (...) {
+        db.exec("PRAGMA foreign_keys = ON");
+        throw;
+    }
+    db.exec("PRAGMA foreign_keys = ON");
+    return target;
 }

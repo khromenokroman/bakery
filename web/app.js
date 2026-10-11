@@ -73,6 +73,25 @@ function formatQty(milli) {
     return frac ? `${whole},${frac}` : String(whole);
 }
 
+/**
+ * Копейки из строки "45", "45,5" или "45.50"; null, если не сумма в рублях с не более чем двумя знаками.
+ */
+function parseMoney(text) {
+    const m = String(text).trim().replace(/\s/g, '').match(/^(\d{1,9})(?:[.,](\d{1,2}))?$/);
+    if (!m) {
+        return null;
+    }
+    return Number(m[1]) * 100 + Number((m[2] || '').padEnd(2, '0'));
+}
+
+/** Копейки в рубли с разделением разрядов: 1234550 -> "12 345,50". */
+function formatMoney(kop) {
+    const sign = kop < 0 ? '-' : '';
+    const abs = Math.abs(kop);
+    const rub = Math.trunc(abs / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0');
+    return `${sign}${rub},${String(abs % 100).padStart(2, '0')}`;
+}
+
 function showMessage(text, kind = 'error') {
     const box = document.getElementById('message');
     box.textContent = text;
@@ -496,26 +515,40 @@ const DOC_TYPES = {
     order: {
         title: 'Заявка', create: 'Новая заявка', comment: 'От кого', placeholder: 'магазин, имя, телефон',
         back: d => '#/orders?date=' + d, backTitle: '← Заявки', posting: false, fill: false,
+        columns: {qty: true},
     },
     production: {
         title: 'Поступление из производства', create: 'Новое поступление', comment: 'Комментарий', placeholder: '',
         back: () => '#/docs', backTitle: '← Документы', posting: true, fill: true,
+        columns: {qty: true, cost: true},
+    },
+    prices: {
+        title: 'Установка цен', create: 'Новая установка цен', comment: 'Комментарий', placeholder: '',
+        back: () => '#/prices', backTitle: '← Цены', posting: true, fill: false, priceType: true,
+        columns: {price: true},
     },
 };
+
+/** Сумма строки в копейках: количество (тысячные) × цена за единицу, с округлением; BigInt против потери точности. */
+function lineSum(qty, priceKop) {
+    return Number((BigInt(qty) * BigInt(priceKop) + 500n) / 1000n);
+}
 
 /**
  * Карточка документа; id = null для нового (вид берётся из params.type, по умолчанию заявка).
  */
 async function renderDoc(view, id, params) {
-    const [doc, products] = await Promise.all([
+    const [doc, products, priceTypes] = await Promise.all([
         id ? api('GET', `docs/${id}`) : Promise.resolve(null),
         api('GET', 'items?kind=product&archived=1'),
+        api('GET', 'price-types'),
     ]);
     const type = doc ? doc.type : (params.get('type') || 'order');
     const cfg = DOC_TYPES[type];
     if (!cfg) {
         throw new Error('неизвестный вид документа: ' + type);
     }
+    const cols = cfg.columns;
     const posted = doc && doc.status === 'posted';
     const inDoc = new Set((doc ? doc.lines : []).map(l => l.item_id));
     const candidates = products.filter(p => !p.archived || inDoc.has(p.id));
@@ -524,50 +557,120 @@ async function renderDoc(view, id, params) {
 
     const dateInput = el('input', {type: 'date', value: date});
     const comment = el('input', {value: doc ? doc.comment : '', size: 40, placeholder: cfg.placeholder});
+    const chosenType = doc ? doc.price_type_id : (params.get('price_type') ? Number(params.get('price_type')) : null);
+    const priceType = el('select', {},
+        el('option', {value: '', selected: !chosenType}, '— выберите —'),
+        priceTypes.map(t => el('option', {value: t.id, selected: t.id === chosenType}, t.name)));
     const tbody = el('tbody');
+    const totalCell = el('td', {class: 'num'});
+
+    // себестоимость на дату документа: у сохранённых строк своя (записана сервером), у новых - из прайса
+    let costs = new Map();
+    const loadCosts = async d => {
+        if (cols.cost && d) {
+            costs = new Map((await api('GET', `prices?type=1&date=${d}`)).map(r => [r.item_id, r.price_kop]));
+        }
+    };
+    await loadCosts(date);
+
+    const updateTotals = () => {
+        if (!cols.cost) {
+            return;
+        }
+        let total = 0;
+        let missing = false;
+        for (const row of tbody.children) {
+            const qty = parseQty(row.querySelector('input.qty').value);
+            const cost = row.dataset.cost === '' || row.dataset.cost === undefined ? null : Number(row.dataset.cost);
+            const sumCell = row.querySelector('td.cost-sum');
+            if (row.querySelector('select').value && cost === null) {
+                missing = true;
+            }
+            const sum = qty !== null && cost !== null ? lineSum(qty, cost) : null;
+            sumCell.textContent = sum === null ? '' : formatMoney(sum);
+            total += sum || 0;
+        }
+        totalCell.textContent = formatMoney(total) + (missing ? ' *' : '');
+        totalCell.title = missing ? 'у части строк нет себестоимости' : '';
+    };
 
     const addRow = line => {
         const select = el('select', {}, el('option', {value: ''}, '— выберите —'),
             candidates.map(p => el('option', {value: p.id, selected: line && p.id === line.item_id}, p.name + (p.archived ? ' (архив)' : ''))));
         const unitCell = el('td');
-        const updateUnit = () => {
-            const p = byId.get(Number(select.value));
-            unitCell.textContent = p ? UNITS[p.unit] : '';
+        const costCell = el('td', {class: 'num'});
+        const row = el('tr');
+        const setCost = cost => {
+            row.dataset.cost = cost === null || cost === undefined ? '' : cost;
+            costCell.replaceChildren(cost === null || cost === undefined ? el('span', {class: 'muted', title: 'себестоимость не установлена'}, 'нет') : formatMoney(cost));
+            updateTotals();
         };
-        select.addEventListener('change', updateUnit);
-        updateUnit();
-        const row = el('tr', {},
+        const onItem = () => {
+            const p = byId.get(Number(select.value));
+            unitCell.textContent = p ? (cols.price ? 'за ' : '') + UNITS[p.unit] : '';
+            if (cols.cost) {
+                setCost(p ? costs.get(p.id) : null);
+            }
+        };
+        select.addEventListener('change', onItem);
+        row.append(
             el('td', {}, select),
-            el('td', {class: 'num'}, el('input', {class: 'qty', value: line ? formatQty(line.qty) : ''})),
+            cols.qty ? el('td', {class: 'num'}, el('input', {class: 'qty', value: line ? formatQty(line.qty) : '', oninput: updateTotals})) : '',
+            cols.price ? el('td', {class: 'num'}, el('input', {class: 'money', value: line && line.price_kop !== null ? formatMoney(line.price_kop) : ''})) : '',
             unitCell,
-            el('td', {}, el('button', {class: 'danger', title: 'Убрать строку', onclick: () => row.remove()}, '✕')));
+            cols.cost ? costCell : '',
+            cols.cost ? el('td', {class: 'num cost-sum'}) : '',
+            el('td', {}, el('button', {class: 'danger', title: 'Убрать строку', onclick: () => { row.remove(); updateTotals(); }}, '✕')));
         tbody.append(row);
+        onItem();
+        if (line && cols.cost && line.cost_kop !== undefined) {
+            setCost(line.cost_kop);
+        }
         return row;
     };
     (doc ? doc.lines : []).forEach(addRow);
     if (!doc) {
         addRow(null);
     }
+    dateInput.addEventListener('change', async () => {
+        if (cols.cost && dateInput.value) {
+            await loadCosts(dateInput.value).catch(err => showMessage(err.message));
+            for (const row of tbody.children) {
+                row.querySelector('select').dispatchEvent(new Event('change'));
+            }
+        }
+    });
 
     /** Строки из таблицы; null и сообщение, если что-то не так. */
     const collect = () => {
         const lines = [];
         for (const row of tbody.children) {
             const itemId = Number(row.querySelector('select').value);
-            const qtyText = row.querySelector('input').value;
-            if (!itemId && !qtyText.trim()) {
+            const qtyText = cols.qty ? row.querySelector('input.qty').value : '';
+            const priceText = cols.price ? row.querySelector('input.money').value : '';
+            if (!itemId && !qtyText.trim() && !priceText.trim()) {
                 continue;
             }
             if (!itemId) {
                 showMessage('В строке не выбрана продукция');
                 return null;
             }
-            const qty = parseQty(qtyText);
-            if (qty === null) {
-                showMessage(`«${byId.get(itemId).name}»: введите количество, не более трёх знаков после запятой`);
-                return null;
+            const line = {item_id: itemId};
+            if (cols.qty) {
+                line.qty = parseQty(qtyText);
+                if (line.qty === null) {
+                    showMessage(`«${byId.get(itemId).name}»: введите количество, не более трёх знаков после запятой`);
+                    return null;
+                }
             }
-            lines.push({item_id: itemId, qty});
+            if (cols.price) {
+                line.price_kop = parseMoney(priceText);
+                if (line.price_kop === null) {
+                    showMessage(`«${byId.get(itemId).name}»: введите цену в рублях, не более двух знаков после запятой`);
+                    return null;
+                }
+            }
+            lines.push(line);
         }
         return lines;
     };
@@ -578,6 +681,9 @@ async function renderDoc(view, id, params) {
             return;
         }
         const body = {type, date: dateInput.value, comment: comment.value, lines};
+        if (cfg.priceType) {
+            body.price_type_id = selectValue(priceType);
+        }
         let saved;
         const ok = await attempt(async () => {
             saved = await api(doc ? 'PUT' : 'POST', doc ? `docs/${doc.id}` : 'docs', body);
@@ -663,11 +769,21 @@ async function renderDoc(view, id, params) {
                 doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null)),
         el('div', {class: 'fields'},
             el('label', {}, 'Дата', dateInput),
+            cfg.priceType ? el('label', {}, 'Тип цен', priceType) : null,
             el('label', {}, cfg.comment, comment)),
         fillPanel,
         el('div', {class: 'table-wrap', style: 'margin-top: 12px'}, el('table', {},
-            el('thead', {}, el('tr', {}, el('th', {}, 'Продукция'), el('th', {class: 'num'}, 'Количество'), el('th', {}, 'Ед.'), el('th'))),
-            tbody)),
+            el('thead', {}, el('tr', {},
+                el('th', {}, 'Продукция'),
+                cols.qty ? el('th', {class: 'num'}, 'Количество') : null,
+                cols.price ? el('th', {class: 'num'}, 'Цена, ₽') : null,
+                el('th', {}, 'Ед.'),
+                cols.cost ? el('th', {class: 'num'}, 'Себест., ₽') : null,
+                cols.cost ? el('th', {class: 'num'}, 'Сумма себест., ₽') : null,
+                el('th'))),
+            tbody,
+            cols.cost ? el('tfoot', {}, el('tr', {},
+                el('td', {colspan: 4}, el('strong', {}, 'Итого себестоимость')), totalCell, el('td'))) : null)),
         el('div', {class: 'toolbar', style: 'margin-top: 8px'},
             el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка')));
 }
@@ -680,7 +796,7 @@ async function renderDocs(view) {
     const today = isoDate(new Date());
     const from = docsState.from || shiftDate(today, -7);
     const to = docsState.to || today;
-    const docs = await api('GET', `docs?type=production&from=${from}&to=${to}`);
+    const docs = await api('GET', `docs?type=production,prices&from=${from}&to=${to}`);
     const fromInput = el('input', {type: 'date', value: from, onchange: e => { docsState.from = e.target.value; route(); }});
     const toInput = el('input', {type: 'date', value: to, onchange: e => { docsState.to = e.target.value; route(); }});
 
@@ -694,11 +810,66 @@ async function renderDocs(view) {
     render(view,
         el('h2', {}, 'Документы'),
         el('div', {class: 'toolbar'},
-            el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=production'; }}, 'Новое поступление')),
+            el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=production'; }}, 'Новое поступление'),
+            el('button', {onclick: () => { location.hash = '#/docs/new?type=prices'; }}, 'Новая установка цен')),
         el('div', {class: 'toolbar'}, 'с', fromInput, 'по', toInput),
         el('div', {class: 'table-wrap'}, el('table', {},
             el('thead', {}, el('tr', {}, el('th', {}, 'Дата'), el('th', {}, 'Документ'), el('th', {}, 'Статус'), el('th', {}, 'Комментарий'), el('th', {}, 'Состав'))),
             el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 5, class: 'muted'}, 'За эти дни документов нет'))))));
+}
+
+// ---------- цены ----------
+
+async function renderPrices(view, params) {
+    const types = await api('GET', 'price-types');
+    const typeId = Number(params.get('type')) || types[0].id;
+    const current = types.find(t => t.id === typeId) || types[0];
+    const date = params.get('date') || isoDate(new Date());
+    const list = await api('GET', `prices?type=${current.id}&date=${date}`);
+    const go = (t, d) => { location.hash = `#/prices?type=${t}&date=${d}`; };
+
+    const addType = async () => {
+        const name = prompt('Новый тип цен:');
+        let created;
+        if (name && await attempt(async () => { created = await api('POST', 'price-types', {name}); }, 'Тип цен создан')) {
+            go(created.id, date);
+        }
+    };
+    const renameType = async () => {
+        const name = prompt('Название типа цен:', current.name);
+        if (name && await attempt(() => api('PUT', `price-types/${current.id}`, {name}), 'Тип цен переименован')) {
+            route();
+        }
+    };
+    const removeType = async () => {
+        if (confirm(`Удалить тип цен «${current.name}»?`) && await attempt(() => api('DELETE', `price-types/${current.id}`), 'Тип цен удалён')) {
+            go(types[0].id, date);
+        }
+    };
+
+    render(view,
+        el('h2', {}, 'Цены'),
+        el('div', {class: 'tabs toolbar'},
+            types.map(t => el('button', {class: t.id === current.id ? 'active' : null, onclick: () => go(t.id, date)}, t.name)),
+            el('button', {onclick: addType}, '+ тип цен')),
+        el('div', {class: 'toolbar'},
+            el('button', {class: 'primary', onclick: () => { location.hash = `#/docs/new?type=prices&price_type=${current.id}&date=${date}`; }}, 'Новая установка цен'),
+            current.system ? null : el('button', {onclick: renameType}, 'Переименовать'),
+            current.system ? null : el('button', {class: 'danger', onclick: removeType}, 'Удалить тип')),
+        el('div', {class: 'toolbar'},
+            'Цены «' + current.name + '» на',
+            el('input', {type: 'date', value: date, onchange: e => e.target.value && go(current.id, e.target.value)}),
+            el('span', {class: 'muted'}, humanDate(date))),
+        current.system ? el('p', {class: 'muted'}, 'Себестоимость подставляется в строки складских документов на их дату.') : null,
+        el('div', {class: 'table-wrap'}, el('table', {class: 'needs'},
+            el('thead', {}, el('tr', {}, el('th', {}, 'Продукция'), el('th', {class: 'num'}, 'Цена, ₽'), el('th', {}, 'Ед.'), el('th', {}, 'Действует с'))),
+            el('tbody', {}, list.length
+                ? list.map(r => el('tr', {class: 'link', onclick: () => { location.hash = '#/docs/' + r.doc_id; }},
+                    el('td', {}, r.name),
+                    el('td', {class: 'num'}, formatMoney(r.price_kop)),
+                    el('td', {}, 'за ' + UNITS[r.unit]),
+                    el('td', {class: 'muted'}, humanDate(r.date))))
+                : el('tr', {}, el('td', {colspan: 4, class: 'muted'}, 'Цен этого типа на дату нет'))))));
 }
 
 // ---------- остатки ----------
@@ -790,6 +961,8 @@ async function route() {
             await renderDoc(view, null, params);
         } else if (hash === '#/docs') {
             await renderDocs(view);
+        } else if (hash === '#/prices') {
+            await renderPrices(view, params);
         } else if (hash === '#/stock') {
             await renderStock(view, params);
         } else if (hash === '#/requirements') {

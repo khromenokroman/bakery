@@ -17,6 +17,7 @@ SCENARIOS=(
     "production_fill.js|#/docs/new?type=production&date=2026-10-12"
     "order_new.js|#/orders/new?date=2026-10-13"
     "groups.js|#/items"
+    "prices.js|#/prices"
 )
 
 failed=0

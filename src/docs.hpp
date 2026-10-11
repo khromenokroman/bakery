@@ -18,6 +18,7 @@ enum class DocType : std::uint8_t {
     RETURN,     ///< возврат от покупателя
     WRITEOFF,   ///< списание
     INVENTORY,  ///< инвентаризация
+    PRICES,     ///< установка цен одного типа, движений не делает
 };
 
 [[nodiscard]] std::string_view to_string(DocType type);
@@ -28,7 +29,9 @@ enum class DocType : std::uint8_t {
  * @brief Строка документа.
  */
 struct DocLine {
-    std::string name; ///< только для чтения
+    std::string name;                      ///< только для чтения
+    std::optional<std::int64_t> price_kop; ///< цена за единицу: установка цен, реализация
+    std::optional<std::int64_t> cost_kop; ///< себестоимость за единицу на дату документа; заполняет сервер
     std::int64_t item_id{};
     std::int64_t qty{};    ///< тысячные доли единицы позиции
     Unit unit = Unit::PCS; ///< только для чтения
@@ -41,7 +44,8 @@ struct Document {
     std::vector<DocLine> lines;
     std::string date; ///< YYYY-MM-DD
     std::string comment;
-    std::string status = "draft"; ///< только для чтения
+    std::string status = "draft";              ///< только для чтения
+    std::optional<std::int64_t> price_type_id; ///< тип цен: установка цен, реализация
     std::int64_t id{};
     std::int64_t number{}; ///< только для чтения: присваивается при создании, сквозной в пределах вида
     DocType type = DocType::ORDER;
@@ -63,7 +67,10 @@ struct DocFilter {
 void check_date(std::string_view date);
 
 /**
- * @brief Документы. Поддерживаются заявки (без движений) и поступление из производства.
+ * @brief Документы: заявки (без движений), поступление из производства, установка цен.
+ *
+ * В строки складских документов при сохранении записывается себестоимость на дату документа
+ * (тип цен «Себестоимость»); установка цен действует после проведения.
  *
  * Проведение пишет движения склада, отмена проведения их удаляет; остаток не может уйти в минус
  * ни на один день. Изменение проведённого документа перепроводит его; удалить проведённый нельзя.
@@ -116,7 +123,8 @@ class Documents {
     /// Проверки вида документа, даты и строк; old_items - позиции, уже бывшие в документе.
     void validate(Document const &doc, std::vector<std::int64_t> const &old_items) const;
 
-    void write_lines(std::int64_t doc_id, std::vector<DocLine> const &lines);
+    /// Строки документа doc.id; себестоимость для складских видов берётся на doc.date.
+    void write_lines(Document const &doc);
 
     /// Движения склада по строкам документа на его дату, со знаком его вида.
     void write_moves(Document const &doc);

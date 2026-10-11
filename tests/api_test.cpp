@@ -369,3 +369,39 @@ TEST(ApiGroups, TreeAndFilters) {
     EXPECT_EQ(CALL(srv, "GET", "/api/stock?group=abc").status, 400);
     EXPECT_EQ(CALL(srv, "GET", "/api/stock?group=999").status, 404);
 }
+
+/**
+ * @brief Цены через API: тип цен, установка цен, прайс на дату, себестоимость в поступлении.
+ */
+TEST(ApiPrices, TypesPriceListAndCost) {
+    TestServer srv;
+    auto r = CALL(srv, "GET", "/api/price-types");
+    ASSERT_EQ(r.body.size(), 1U) << r.body;
+    EXPECT_EQ(r.body.at(0).at("system"), true);
+    r = CALL(srv, "POST", "/api/price-types", {{"name", "Вариант 1"}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    auto const v1 = r.body.at("id");
+
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    for (auto const &[type, price] : {std::pair{v1, nlohmann::json(4500)}, std::pair{nlohmann::json(1), nlohmann::json(3120)}}) {
+        r = CALL(srv, "POST", "/api/docs",
+                 {{"type", "prices"}, {"date", "2026-10-10"}, {"price_type_id", type}, {"lines", {{{"item_id", bread}, {"price_kop", price}}}}});
+        ASSERT_EQ(r.status, 201) << r.body;
+        EXPECT_EQ(CALL(srv, "POST", "/api/docs/" + r.body.at("id").dump() + "/post").status, 200);
+    }
+
+    r = CALL(srv, "GET", "/api/prices?type=" + v1.dump() + "&date=2026-10-12");
+    ASSERT_EQ(r.body.size(), 1U) << r.body;
+    EXPECT_EQ(r.body.at(0).at("price_kop"), 4500);
+    EXPECT_EQ(r.body.at(0).at("date"), "2026-10-10");
+    EXPECT_TRUE(CALL(srv, "GET", "/api/prices?type=" + v1.dump() + "&date=2026-10-09").body.empty());
+
+    r = CALL(srv, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-12"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}});
+    EXPECT_EQ(r.body.at("lines").at(0).at("cost_kop"), 3120) << r.body;
+
+    EXPECT_EQ(CALL(srv, "GET", "/api/prices?date=2026-10-12").status, 400) << "без типа";
+    EXPECT_EQ(CALL(srv, "GET", "/api/prices?type=99&date=2026-10-12").status, 404);
+    r = CALL(srv, "DELETE", "/api/price-types/1");
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("встроенный"));
+}
