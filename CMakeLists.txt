@@ -25,7 +25,9 @@ set(BAKERY_WEB_DIR "${CMAKE_INSTALL_FULL_DATADIR}/${PROJECT_NAME}/web")
 
 add_library(${PROJECT_NAME}-core STATIC
         src/api.cpp
+        src/catalog.cpp
         src/db.cpp
+        src/json_io.cpp
         src/options.cpp
         src/schema.cpp
 )
@@ -46,6 +48,7 @@ if (BUILD_TESTS)
     find_package(GTest REQUIRED)
     add_executable(${PROJECT_NAME}-tests
             tests/api_test.cpp
+            tests/catalog_test.cpp
             tests/options_test.cpp
             tests/schema_test.cpp
     )

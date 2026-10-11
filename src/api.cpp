@@ -2,10 +2,13 @@
 
 #include <httplib.h>
 
+#include <charconv>
 #include <exception>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
+#include "errors.hpp"
+#include "json_io.hpp"
 #include "schema.hpp"
 
 namespace {
@@ -14,20 +17,44 @@ constexpr char const JSON_TYPE[] = "application/json; charset=utf-8";
 
 void send_json(httplib::Response &res, nlohmann::json const &body, int status = 200) {
     res.status = status;
-    res.set_content(body.dump(), JSON_TYPE);
+    res.set_content(body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), JSON_TYPE);
 }
 
 void send_error(httplib::Response &res, int status, std::string const &message) { send_json(res, {{"error", message}}, status); }
 
+/// id из пути запроса; не число означает несуществующий объект.
+std::int64_t path_id(httplib::Request const &req) {
+    auto const &text = req.path_params.at("id");
+    std::int64_t id = 0;
+    auto const [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), id);
+    if (ec != std::errc{} || ptr != text.data() + text.size()) {
+        throw NotFoundError("неверный id: " + text);
+    }
+    return id;
+}
+
 } // namespace
 
-Api::Api(Database &db, std::string web_dir) : m_web_dir{std::move(web_dir)}, m_db{db} {}
+Api::Api(Database &db, std::string web_dir) : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_db{db} {}
+
+Api::Handler Api::guarded(Handler handler) {
+    return [this, handler = std::move(handler)](httplib::Request const &req, httplib::Response &res) {
+        auto const lock = m_db.lock();
+        try {
+            handler(req, res);
+        } catch (UserError const &e) {
+            send_error(res, 400, e.what());
+        } catch (NotFoundError const &e) {
+            send_error(res, 404, e.what());
+        }
+    };
+}
 
 void Api::register_routes(httplib::Server &server) {
-    server.Get("/api/version", [this](httplib::Request const &, httplib::Response &res) {
-        auto const lock = m_db.lock();
-        send_json(res, {{"version", BAKERY_VERSION}, {"schema", current_schema_version(m_db)}});
-    });
+    server.Get("/api/version", guarded([this](httplib::Request const &, httplib::Response &res) {
+                   send_json(res, {{"version", BAKERY_VERSION}, {"schema", current_schema_version(m_db)}});
+               }));
+    register_catalog(server);
 
     if (!m_web_dir.empty() && !server.set_mount_point("/", m_web_dir)) {
         throw std::runtime_error("каталог веб-интерфейса не найден: " + m_web_dir);
@@ -48,4 +75,64 @@ void Api::register_routes(httplib::Server &server) {
             send_error(res, res.status, res.status == 404 ? "нет такого метода: " + req.method + " " + req.path : "ошибка запроса");
         }
     });
+}
+
+void Api::register_catalog(httplib::Server &server) {
+    server.Get("/api/items", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   ItemFilter filter;
+                   if (req.has_param("kind")) {
+                       filter.kind = kind_from_string(req.get_param_value("kind"));
+                   }
+                   filter.with_archived = req.get_param_value("archived") == "1";
+                   auto out = nlohmann::json::array();
+                   for (auto const &item : m_catalog.list(filter)) {
+                       out.push_back(to_json(item));
+                   }
+                   send_json(res, out);
+               }));
+
+    server.Post("/api/items", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                    auto const j = parse_object(req.body);
+                    Item item;
+                    item.name = get_string(j, "name");
+                    item.kind = kind_from_string(get_string(j, "kind"));
+                    item.unit = unit_from_string(get_string(j, "unit"));
+                    auto const id = m_catalog.create(item);
+                    send_json(res, to_json(m_catalog.get(id)), 201);
+                }));
+
+    server.Get("/api/items/:id",
+               guarded([this](httplib::Request const &req, httplib::Response &res) { send_json(res, to_json(m_catalog.get(path_id(req)))); }));
+
+    server.Put("/api/items/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto const id = path_id(req);
+                   auto const item = item_from_json(parse_object(req.body), m_catalog.get(id));
+                   m_catalog.update(item);
+                   send_json(res, to_json(m_catalog.get(id)));
+               }));
+
+    server.Delete("/api/items/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                      m_catalog.remove(path_id(req));
+                      send_json(res, nlohmann::json::object());
+                  }));
+
+    server.Get("/api/items/:id/recipe", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto const id = path_id(req);
+                   (void)m_catalog.get(id);
+                   auto const recipe = m_catalog.recipe(id);
+                   send_json(res, recipe ? to_json(*recipe) : nlohmann::json(nullptr));
+               }));
+
+    server.Put("/api/items/:id/recipe", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto const id = path_id(req);
+                   m_catalog.set_recipe(id, recipe_from_json(parse_object(req.body)));
+                   send_json(res, to_json(*m_catalog.recipe(id)));
+               }));
+
+    server.Delete("/api/items/:id/recipe", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                      auto const id = path_id(req);
+                      (void)m_catalog.get(id);
+                      m_catalog.remove_recipe(id);
+                      send_json(res, nlohmann::json::object());
+                  }));
 }

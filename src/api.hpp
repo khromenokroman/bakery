@@ -1,11 +1,15 @@
 #pragma once
+#include <functional>
 #include <string>
 
+#include "catalog.hpp"
 #include "db.hpp"
 
 namespace httplib {
 class Server;
-}
+struct Request;
+struct Response;
+} // namespace httplib
 
 /**
  * @brief HTTP API и раздача веб-интерфейса.
@@ -24,6 +28,16 @@ class Api {
     void register_routes(httplib::Server &server);
 
    private:
+    using Handler = std::function<void(httplib::Request const &, httplib::Response &)>;
+
+    /**
+     * @brief Оборачивает обработчик: захват базы, перевод исключений в ответы 400/404.
+     */
+    [[nodiscard]] Handler guarded(Handler handler);
+
+    void register_catalog(httplib::Server &server);
+
     std::string m_web_dir;
+    Catalog m_catalog;
     Database &m_db;
 };
