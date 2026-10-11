@@ -655,13 +655,14 @@ void Documents::write_lines(Document const &doc) {
         ins.reset();
         ins.bind(1, doc.id).bind(2, line.item_id).bind(3, doc.type == DocType::PRICES ? 0 : line.qty);
         if (doc.type == DocType::RETURN) {
-            // возврат по ценам и себестоимости реализации
+            // цена - из реализации (покупателю возвращают уплаченное), себестоимость - на момент возврата,
+            // как у любого поступления: иначе возврат после переоценки ляжет на склад по старой себестоимости
             auto const &src = from_sale.at(line.item_id);
             if (src.price_kop) {
                 ins.bind(4, *src.price_kop);
             }
-            if (src.cost_kop) {
-                ins.bind(5, *src.cost_kop);
+            if (auto const cost = prices.price(COST_PRICE_TYPE, line.item_id, moment(doc))) {
+                ins.bind(5, *cost);
             }
             ins.step();
             continue;

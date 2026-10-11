@@ -71,7 +71,8 @@ class ReturnsTest : public DbFixture {
 } // namespace
 
 /**
- * @brief Возврат: клиент, тип цен, цена и себестоимость из реализации; проведение возвращает на склад.
+ * @brief Возврат: клиент, тип цен и цена из реализации, себестоимость на момент возврата; проведение
+ * возвращает на склад.
  */
 TEST_F(ReturnsTest, ReturnToStockWithSalePrices) {
     auto doc = return_doc("2026-10-13", {{m_bread, 5000}});
@@ -81,7 +82,7 @@ TEST_F(ReturnsTest, ReturnToStockWithSalePrices) {
     EXPECT_EQ(saved.partner_id, m_shop) << "клиент из реализации";
     EXPECT_EQ(saved.price_type_id, m_v1);
     EXPECT_EQ(saved.lines[0].price_kop, 4500) << "цена из реализации";
-    EXPECT_EQ(saved.lines[0].cost_kop, 3120) << "себестоимость из реализации";
+    EXPECT_EQ(saved.lines[0].cost_kop, 3120) << "себестоимость на 13.10 (не менялась)";
     EXPECT_EQ(balance(m_bread), 10000);
     m_docs.post(id);
     EXPECT_EQ(balance(m_bread), 15000) << "10 + 5 возвращено";
@@ -184,4 +185,26 @@ TEST_F(ReturnsTest, ReturnNotBeforeSaleTime) {
     EXPECT_THROW_REASON(m_docs.create(ret), UserError, "возврат не может быть раньше реализации");
     ret.time = "15:30";
     EXPECT_NO_THROW(m_docs.create(ret));
+}
+
+/**
+ * @brief Себестоимость менялась между реализацией и возвратом: цена возврата - из реализации,
+ * себестоимость - новая.
+ */
+TEST_F(ReturnsTest, CostAtReturnMoment) {
+    Document cost;
+    cost.type = DocType::PRICES;
+    cost.date = "2026-10-12";
+    cost.time = "18:00";
+    cost.price_type_id = COST_PRICE_TYPE;
+    DocLine l;
+    l.item_id = m_bread;
+    l.price_kop = 4000;
+    cost.lines = {l};
+    m_docs.post(m_docs.create(cost));
+    auto const id = m_docs.create(return_doc("2026-10-13", {{m_bread, 5000}}));
+    auto const saved = m_docs.get(id);
+    EXPECT_EQ(saved.lines[0].price_kop, 4500) << "покупателю возвращают уплаченное";
+    EXPECT_EQ(saved.lines[0].cost_kop, 4000) << "себестоимость на 13.10, после смены 12.10 в 18:00";
+    EXPECT_EQ(m_docs.get(m_sale).lines[0].cost_kop, 3120) << "реализация не меняется";
 }

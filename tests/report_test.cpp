@@ -289,3 +289,53 @@ TEST(Revaluation, DecreaseAndFirstPrice) {
     EXPECT_EQ(r.outgoing[0].sum, 20000) << "снижение 4 кг × 50,00";
     EXPECT_EQ(r.closing_sum, 140000) << "4 кг × 350,00";
 }
+
+/**
+ * @brief Сценарий: 10 шт по 10,00; продано 5; себестоимость стала 20,00; по реализации возвращено 5.
+ *
+ * Поступление +100, реализация -50, переоценка остатка 5 × 10 = +50, возврат по новой себестоимости
+ * 5 × 20 = +100; конец 200,00 = 10 шт × 20,00.
+ */
+TEST(Revaluation, ReturnAfterRevaluation) {
+    Database db{":memory:"};
+    migrate(db);
+    Catalog catalog{db};
+    Documents docs{db};
+    Prices prices{db};
+    Item i;
+    i.name = "Батон";
+    i.kind = Kind::PRODUCT;
+    i.unit = Unit::PCS;
+    auto const bread = catalog.create(i);
+    auto const opt = prices.create_type("Опт");
+    auto const make = [&](DocType type, std::string const &date, std::string const &time, std::int64_t qty, std::optional<std::int64_t> price) {
+        Document d;
+        d.type = type;
+        d.date = date;
+        d.time = time;
+        DocLine l;
+        l.item_id = bread;
+        l.qty = qty;
+        l.price_kop = price;
+        d.lines = {l};
+        if (type == DocType::PRICES) {
+            d.price_type_id = COST_PRICE_TYPE;
+        } else if (type == DocType::SALE) {
+            d.price_type_id = opt;
+        }
+        return d;
+    };
+    docs.post(docs.create(make(DocType::PRICES, "2026-10-01", "00:00", 0, 1000)));
+    docs.post(docs.create(make(DocType::PRODUCTION, "2026-10-05", "08:00", 10000, std::nullopt)));
+    auto const sale = docs.create(make(DocType::SALE, "2026-10-06", "10:00", 5000, 4500));
+    docs.post(sale);
+    docs.post(docs.create(make(DocType::PRICES, "2026-10-07", "09:00", 0, 2000)));
+    auto ret = make(DocType::RETURN, "2026-10-08", "11:00", 5000, std::nullopt);
+    ret.base_id = sale;
+    docs.post(docs.create(ret));
+
+    auto const r = goods_report(db, "2026-10-01", "2026-10-08");
+    EXPECT_EQ(r.in_sum, 25000) << "поступление 100 + переоценка 50 + возврат 100";
+    EXPECT_EQ(r.out_sum, 5000);
+    EXPECT_EQ(r.closing_sum, 20000) << "10 шт × 20,00";
+}

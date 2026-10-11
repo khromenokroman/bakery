@@ -855,7 +855,7 @@ async function renderDoc(view, id, params) {
     } else if (cfg.returnOf) {
         // новый возврат: всё, что ещё не возвращено, по ценам и себестоимости реализации
         [...returnable.values()].filter(r => r.sold > r.returned).forEach(r =>
-            addRow({item_id: r.item_id, qty: r.sold - r.returned, price_kop: r.price_kop, cost_kop: r.cost_kop}));
+            addRow({item_id: r.item_id, qty: r.sold - r.returned, price_kop: r.price_kop}));
     } else {
         addRow(null);
     }

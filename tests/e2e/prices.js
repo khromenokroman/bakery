@@ -35,7 +35,8 @@ const priceRow = [...document.querySelectorAll('tbody tr')].map(r => r.innerText
 log.push('прайс «Вариант 1»: ' + priceRow.join(' | '));
 expect(priceRow[0].startsWith('Батон 45,50 за шт'), 'в прайсе нет батона по 45,50');
 
-location.hash = '#/docs/new?type=production&date=' + new Date().toISOString().slice(0, 10);
+// местная дата, как в программе: toISOString() дал бы UTC и после полуночи - вчерашний день
+location.hash = '#/docs/new?type=production&date=' + isoDate(new Date());
 await sleep(700);
 const row = document.querySelector('tbody tr');
 pick(row, 'Батон');
