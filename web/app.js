@@ -463,6 +463,11 @@ function humanDate(iso) {
     return `${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}.${y}, ${wd}`;
 }
 
+/** «От кого» заявки: клиент из справочника, иначе комментарий. */
+function orderFrom(o) {
+    return [o.partner_name, o.comment].filter(Boolean).join(', ');
+}
+
 function lineSummary(lines) {
     return lines.map(l => `${l.name} ${formatQty(l.qty)} ${UNITS[l.unit]}`).join(', ');
 }
@@ -482,7 +487,7 @@ async function renderOrders(view, params) {
         return el('tr', {class: 'link', onclick: () => { location.hash = '#/orders/' + doc.id; }},
             el('td', {}, check),
             el('td', {class: 'num'}, doc.number),
-            el('td', {}, doc.comment || el('span', {class: 'muted'}, 'без комментария')),
+            el('td', {}, orderFrom(doc) || el('span', {class: 'muted'}, 'не указано')),
             el('td', {}, lineSummary(doc.lines)));
     });
 
@@ -513,17 +518,22 @@ async function renderOrders(view, params) {
 /** Настройки карточки по виду документа. */
 const DOC_TYPES = {
     order: {
-        title: 'Заявка', create: 'Новая заявка', comment: 'От кого', placeholder: 'магазин, имя, телефон',
+        title: 'Заявка', create: 'Новая заявка', comment: 'Комментарий', partner: 'От кого',
         back: d => '#/orders?date=' + d, backTitle: '← Заявки', posting: false, fill: false,
         columns: {qty: true},
     },
     production: {
-        title: 'Поступление из производства', create: 'Новое поступление', comment: 'Комментарий', placeholder: '',
+        title: 'Поступление из производства', create: 'Новое поступление', comment: 'Комментарий',
         back: () => '#/docs', backTitle: '← Документы', posting: true, fill: true,
         columns: {qty: true, cost: true},
     },
+    sale: {
+        title: 'Реализация', create: 'Новая реализация', comment: 'Комментарий', partner: 'Клиент',
+        back: () => '#/docs', backTitle: '← Документы', posting: true, fill: true, priceType: true, typedPrices: true,
+        columns: {qty: true, price: true, cost: true},
+    },
     prices: {
-        title: 'Установка цен', create: 'Новая установка цен', comment: 'Комментарий', placeholder: '',
+        title: 'Установка цен', create: 'Новая установка цен', comment: 'Комментарий',
         back: () => '#/prices', backTitle: '← Цены', posting: true, fill: false, priceType: true,
         columns: {price: true},
     },
@@ -536,12 +546,15 @@ function lineSum(qty, priceKop) {
 
 /**
  * Карточка документа; id = null для нового (вид берётся из params.type, по умолчанию заявка).
+ * Колонки зависят от вида: количество, цена (в реализации - из типа цен, можно поправить),
+ * сумма, себестоимость на дату документа и её сумма.
  */
 async function renderDoc(view, id, params) {
-    const [doc, products, priceTypes] = await Promise.all([
+    const [doc, products, priceTypes, partners] = await Promise.all([
         id ? api('GET', `docs/${id}`) : Promise.resolve(null),
         api('GET', 'items?kind=product&archived=1'),
         api('GET', 'price-types'),
+        api('GET', 'partners?archived=1'),
     ]);
     const type = doc ? doc.type : (params.get('type') || 'order');
     const cfg = DOC_TYPES[type];
@@ -556,42 +569,91 @@ async function renderDoc(view, id, params) {
     const date = doc ? doc.date : (params.get('date') || isoDate(new Date()));
 
     const dateInput = el('input', {type: 'date', value: date});
-    const comment = el('input', {value: doc ? doc.comment : '', size: 40, placeholder: cfg.placeholder});
+    const comment = el('input', {value: doc ? doc.comment : '', size: 40});
     const chosenType = doc ? doc.price_type_id : (params.get('price_type') ? Number(params.get('price_type')) : null);
     const priceType = el('select', {},
         el('option', {value: '', selected: !chosenType}, '— выберите —'),
         priceTypes.map(t => el('option', {value: t.id, selected: t.id === chosenType}, t.name)));
+    const partnerId = doc ? doc.partner_id : null;
+    const partner = el('select', {},
+        el('option', {value: '', selected: !partnerId}, '— не выбран —'),
+        partners.filter(p => !p.archived || p.id === partnerId).map(p =>
+            el('option', {value: p.id, selected: p.id === partnerId}, p.name + (p.archived ? ' (архив)' : ''))));
     const tbody = el('tbody');
-    const totalCell = el('td', {class: 'num'});
+    const totals = el('div', {class: 'totals'});
 
-    // себестоимость на дату документа: у сохранённых строк своя (записана сервером), у новых - из прайса
+    // себестоимость и типовые цены на дату документа; у сохранённых строк себестоимость своя (записана сервером)
     let costs = new Map();
-    const loadCosts = async d => {
+    let typed = new Map();
+    const loadPrices = async () => {
+        const d = dateInput.value;
         if (cols.cost && d) {
             costs = new Map((await api('GET', `prices?type=1&date=${d}`)).map(r => [r.item_id, r.price_kop]));
         }
+        if (cfg.typedPrices && d && priceType.value) {
+            typed = new Map((await api('GET', `prices?type=${priceType.value}&date=${d}`)).map(r => [r.item_id, r.price_kop]));
+        } else {
+            typed = new Map();
+        }
     };
-    await loadCosts(date);
+    await loadPrices();
 
-    const updateTotals = () => {
-        if (!cols.cost) {
-            return;
-        }
-        let total = 0;
-        let missing = false;
+    const numberOrNull = text => (text === '' || text === undefined ? null : Number(text));
+
+    /** Пересчёт сумм строк, отметок цены и итогов. */
+    const update = () => {
+        let sum = 0;
+        let costSum = 0;
+        let missingCost = false;
+        let missingPrice = 0;
         for (const row of tbody.children) {
-            const qty = parseQty(row.querySelector('input.qty').value);
-            const cost = row.dataset.cost === '' || row.dataset.cost === undefined ? null : Number(row.dataset.cost);
-            const sumCell = row.querySelector('td.cost-sum');
-            if (row.querySelector('select').value && cost === null) {
-                missing = true;
+            const itemId = Number(row.querySelector('select').value);
+            const qty = cols.qty ? parseQty(row.querySelector('input.qty').value) : null;
+            if (cols.price) {
+                const input = row.querySelector('input.money');
+                const price = parseMoney(input.value);
+                const typical = typed.get(itemId);
+                input.classList.toggle('missing', !!itemId && cfg.typedPrices && price === null);
+                input.classList.toggle('manual', cfg.typedPrices && price !== null && typical !== undefined && price !== typical);
+                input.title = !cfg.typedPrices ? '' : typical === undefined ? 'нет цены в выбранном типе цен' : 'типовая цена ' + formatMoney(typical);
+                if (itemId && cfg.typedPrices && price === null) {
+                    missingPrice++;
+                }
+                const lineTotal = qty !== null && price !== null && cols.qty ? lineSum(qty, price) : null;
+                const cell = row.querySelector('td.sum');
+                if (cell) {
+                    cell.textContent = lineTotal === null ? '' : formatMoney(lineTotal);
+                }
+                sum += lineTotal || 0;
             }
-            const sum = qty !== null && cost !== null ? lineSum(qty, cost) : null;
-            sumCell.textContent = sum === null ? '' : formatMoney(sum);
-            total += sum || 0;
+            if (cols.cost) {
+                const cost = numberOrNull(row.dataset.cost);
+                if (itemId && cost === null) {
+                    missingCost = true;
+                }
+                const lineCost = qty !== null && cost !== null ? lineSum(qty, cost) : null;
+                row.querySelector('td.cost-sum').textContent = lineCost === null ? '' : formatMoney(lineCost);
+                costSum += lineCost || 0;
+            }
         }
-        totalCell.textContent = formatMoney(total) + (missing ? ' *' : '');
-        totalCell.title = missing ? 'у части строк нет себестоимости' : '';
+        const parts = [];
+        if (cols.price && cols.qty) {
+            parts.push(el('span', {}, 'Сумма: ', el('strong', {}, formatMoney(sum) + ' ₽')));
+        }
+        if (cols.cost) {
+            parts.push(el('span', {title: missingCost ? 'у части строк нет себестоимости' : ''},
+                'Себестоимость: ', el('strong', {}, formatMoney(costSum) + ' ₽' + (missingCost ? ' *' : ''))));
+        }
+        if (cols.price && cols.qty && cols.cost && costSum > 0 && !missingCost) {
+            const margin = sum - costSum;
+            parts.push(el('span', {}, 'Наценка: ', el('strong', {}, `${formatMoney(margin)} ₽ (${Math.round(margin * 100 / costSum)}%)`)));
+        } else if (cols.price && cols.qty && cols.cost && missingCost) {
+            parts.push(el('span', {class: 'muted'}, 'наценка не считается: у части строк нет себестоимости'));
+        }
+        if (missingPrice) {
+            parts.push(el('span', {class: 'error-text'}, `без цены строк: ${missingPrice}, провести нельзя`));
+        }
+        totals.replaceChildren(...parts);
     };
 
     const addRow = line => {
@@ -599,47 +661,64 @@ async function renderDoc(view, id, params) {
             candidates.map(p => el('option', {value: p.id, selected: line && p.id === line.item_id}, p.name + (p.archived ? ' (архив)' : ''))));
         const unitCell = el('td');
         const costCell = el('td', {class: 'num'});
+        const priceInput = el('input', {class: 'money', value: line && line.price_kop !== null && line.price_kop !== undefined ? formatMoney(line.price_kop) : '', oninput: update});
         const row = el('tr');
         const setCost = cost => {
             row.dataset.cost = cost === null || cost === undefined ? '' : cost;
             costCell.replaceChildren(cost === null || cost === undefined ? el('span', {class: 'muted', title: 'себестоимость не установлена'}, 'нет') : formatMoney(cost));
-            updateTotals();
         };
-        const onItem = () => {
+        const onItem = initial => {
             const p = byId.get(Number(select.value));
-            unitCell.textContent = p ? (cols.price ? 'за ' : '') + UNITS[p.unit] : '';
+            unitCell.textContent = p ? (cols.price && !cols.qty ? 'за ' : '') + UNITS[p.unit] : '';
             if (cols.cost) {
-                setCost(p ? costs.get(p.id) : null);
+                setCost(initial && line && line.cost_kop !== undefined ? line.cost_kop : (p ? costs.get(p.id) : null));
             }
+            if (cfg.typedPrices && !initial) {
+                const price = p ? typed.get(p.id) : undefined;
+                priceInput.value = price === undefined ? '' : formatMoney(price);
+            }
+            update();
         };
-        select.addEventListener('change', onItem);
+        select.addEventListener('change', () => onItem(false));
         row.append(
             el('td', {}, select),
-            cols.qty ? el('td', {class: 'num'}, el('input', {class: 'qty', value: line ? formatQty(line.qty) : '', oninput: updateTotals})) : '',
-            cols.price ? el('td', {class: 'num'}, el('input', {class: 'money', value: line && line.price_kop !== null ? formatMoney(line.price_kop) : ''})) : '',
+            cols.qty ? el('td', {class: 'num'}, el('input', {class: 'qty', value: line && line.qty ? formatQty(line.qty) : '', oninput: update})) : '',
             unitCell,
+            cols.price ? el('td', {class: 'num'}, priceInput) : '',
+            cols.price && cols.qty ? el('td', {class: 'num sum'}) : '',
             cols.cost ? costCell : '',
             cols.cost ? el('td', {class: 'num cost-sum'}) : '',
-            el('td', {}, el('button', {class: 'danger', title: 'Убрать строку', onclick: () => { row.remove(); updateTotals(); }}, '✕')));
+            el('td', {}, el('button', {class: 'danger', title: 'Убрать строку', onclick: () => { row.remove(); update(); }}, '✕')));
         tbody.append(row);
-        onItem();
-        if (line && cols.cost && line.cost_kop !== undefined) {
-            setCost(line.cost_kop);
-        }
+        onItem(!!line && line.price_kop !== undefined);
         return row;
     };
     (doc ? doc.lines : []).forEach(addRow);
     if (!doc) {
         addRow(null);
     }
-    dateInput.addEventListener('change', async () => {
-        if (cols.cost && dateInput.value) {
-            await loadCosts(dateInput.value).catch(err => showMessage(err.message));
-            for (const row of tbody.children) {
-                row.querySelector('select').dispatchEvent(new Event('change'));
+
+    /** После смены даты или типа цен: новая себестоимость, по желанию - цены нового типа во всех строках. */
+    const reprice = async () => {
+        await loadPrices();
+        const refill = cfg.typedPrices && tbody.querySelector('select') && confirm('Подставить цены на эту дату и этого типа во все строки? Поправленные вручную цены будут заменены.');
+        for (const row of tbody.children) {
+            const itemId = Number(row.querySelector('select').value);
+            if (cols.cost) {
+                const cost = costs.get(itemId);
+                row.dataset.cost = cost === undefined ? '' : cost;
+                row.querySelector('td.cost-sum').previousSibling.replaceChildren(cost === undefined
+                    ? el('span', {class: 'muted', title: 'себестоимость не установлена'}, 'нет') : formatMoney(cost));
+            }
+            if (refill && itemId) {
+                const price = typed.get(itemId);
+                row.querySelector('input.money').value = price === undefined ? '' : formatMoney(price);
             }
         }
-    });
+        update();
+    };
+    dateInput.addEventListener('change', () => dateInput.value && reprice().catch(err => showMessage(err.message)));
+    priceType.addEventListener('change', () => reprice().catch(err => showMessage(err.message)));
 
     /** Строки из таблицы; null и сообщение, если что-то не так. */
     const collect = () => {
@@ -665,7 +744,7 @@ async function renderDoc(view, id, params) {
             }
             if (cols.price) {
                 line.price_kop = parseMoney(priceText);
-                if (line.price_kop === null) {
+                if (line.price_kop === null && (!cfg.typedPrices || priceText.trim())) {
                     showMessage(`«${byId.get(itemId).name}»: введите цену в рублях, не более двух знаков после запятой`);
                     return null;
                 }
@@ -683,6 +762,9 @@ async function renderDoc(view, id, params) {
         const body = {type, date: dateInput.value, comment: comment.value, lines};
         if (cfg.priceType) {
             body.price_type_id = selectValue(priceType);
+        }
+        if (cfg.partner) {
+            body.partner_id = selectValue(partner);
         }
         let saved;
         const ok = await attempt(async () => {
@@ -734,11 +816,19 @@ async function renderDoc(view, id, params) {
             }
             const req = await api('GET', 'requirements?docs=' + chosen.map(o => o.id).join(','));
             tbody.replaceChildren();
-            req.products.forEach(p => addRow({item_id: p.item_id, qty: p.qty}));
+            req.products.forEach(p => {
+                const row = addRow({item_id: p.item_id, qty: p.qty});
+                row.querySelector('select').dispatchEvent(new Event('change'));
+            });
+            const clients = new Set(chosen.map(o => o.partner_id));
+            if (cfg.partner && !partner.value && clients.size === 1 && chosen[0].partner_id) {
+                partner.value = chosen[0].partner_id;
+            }
             if (!comment.value.trim()) {
                 comment.value = `по заявкам № ${chosen.map(o => o.number).join(', ')} на ${humanDate(fillDate).split(',')[0]}`;
             }
             fillPanel.hidden = true;
+            update();
             showMessage('Строки заполнены по заявкам, проверьте количества', 'ok');
         };
         fillPanel.replaceChildren(
@@ -746,7 +836,7 @@ async function renderDoc(view, id, params) {
                 el('button', {onclick: () => { fillPanel.hidden = true; }}, 'Закрыть')),
             orders.length
                 ? el('div', {}, checks.map(([o, c]) => el('label', {class: 'check'}, c,
-                    `№ ${o.number}${o.comment ? ' (' + o.comment + ')' : ''}: ${lineSummary(o.lines)}`)))
+                    `№ ${o.number}${orderFrom(o) ? ' (' + orderFrom(o) + ')' : ''}: ${lineSummary(o.lines)}`)))
                 : el('p', {class: 'muted'}, 'На эту дату заявок нет'),
             orders.length ? el('div', {class: 'toolbar', style: 'margin-top: 8px'},
                 el('button', {class: 'primary', onclick: () => apply().catch(err => showMessage(err.message))}, 'Заполнить')) : null);
@@ -769,6 +859,7 @@ async function renderDoc(view, id, params) {
                 doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null)),
         el('div', {class: 'fields'},
             el('label', {}, 'Дата', dateInput),
+            cfg.partner ? el('label', {}, cfg.partner, partner) : null,
             cfg.priceType ? el('label', {}, 'Тип цен', priceType) : null,
             el('label', {}, cfg.comment, comment)),
         fillPanel,
@@ -776,16 +867,17 @@ async function renderDoc(view, id, params) {
             el('thead', {}, el('tr', {},
                 el('th', {}, 'Продукция'),
                 cols.qty ? el('th', {class: 'num'}, 'Количество') : null,
-                cols.price ? el('th', {class: 'num'}, 'Цена, ₽') : null,
                 el('th', {}, 'Ед.'),
+                cols.price ? el('th', {class: 'num'}, 'Цена, ₽') : null,
+                cols.price && cols.qty ? el('th', {class: 'num'}, 'Сумма, ₽') : null,
                 cols.cost ? el('th', {class: 'num'}, 'Себест., ₽') : null,
                 cols.cost ? el('th', {class: 'num'}, 'Сумма себест., ₽') : null,
                 el('th'))),
-            tbody,
-            cols.cost ? el('tfoot', {}, el('tr', {},
-                el('td', {colspan: 4}, el('strong', {}, 'Итого себестоимость')), totalCell, el('td'))) : null)),
+            tbody)),
         el('div', {class: 'toolbar', style: 'margin-top: 8px'},
-            el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка')));
+            el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка')),
+        totals);
+    update();
 }
 
 // ---------- документы ----------
@@ -796,7 +888,7 @@ async function renderDocs(view) {
     const today = isoDate(new Date());
     const from = docsState.from || shiftDate(today, -7);
     const to = docsState.to || today;
-    const docs = await api('GET', `docs?type=production,prices&from=${from}&to=${to}`);
+    const docs = await api('GET', `docs?type=production,sale,prices&from=${from}&to=${to}`);
     const fromInput = el('input', {type: 'date', value: from, onchange: e => { docsState.from = e.target.value; route(); }});
     const toInput = el('input', {type: 'date', value: to, onchange: e => { docsState.to = e.target.value; route(); }});
 
@@ -804,17 +896,18 @@ async function renderDocs(view) {
         el('td', {}, humanDate(doc.date)),
         el('td', {}, `${DOC_TYPES[doc.type].title} № ${doc.number}`),
         el('td', {}, el('span', {class: 'status ' + doc.status}, doc.status === 'posted' ? 'проведён' : 'не проведён')),
-        el('td', {}, doc.comment),
-        el('td', {}, lineSummary(doc.lines))));
+        el('td', {}, orderFrom(doc)),
+        el('td', {}, doc.type === 'prices' ? doc.lines.map(l => l.name).join(', ') : lineSummary(doc.lines))));
 
     render(view,
         el('h2', {}, 'Документы'),
         el('div', {class: 'toolbar'},
             el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=production'; }}, 'Новое поступление'),
+            el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=sale'; }}, 'Новая реализация'),
             el('button', {onclick: () => { location.hash = '#/docs/new?type=prices'; }}, 'Новая установка цен')),
         el('div', {class: 'toolbar'}, 'с', fromInput, 'по', toInput),
         el('div', {class: 'table-wrap'}, el('table', {},
-            el('thead', {}, el('tr', {}, el('th', {}, 'Дата'), el('th', {}, 'Документ'), el('th', {}, 'Статус'), el('th', {}, 'Комментарий'), el('th', {}, 'Состав'))),
+            el('thead', {}, el('tr', {}, el('th', {}, 'Дата'), el('th', {}, 'Документ'), el('th', {}, 'Статус'), el('th', {}, 'Клиент, комментарий'), el('th', {}, 'Состав'))),
             el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 5, class: 'muted'}, 'За эти дни документов нет'))))));
 }
 
@@ -870,6 +963,69 @@ async function renderPrices(view, params) {
                     el('td', {}, 'за ' + UNITS[r.unit]),
                     el('td', {class: 'muted'}, humanDate(r.date))))
                 : el('tr', {}, el('td', {colspan: 4, class: 'muted'}, 'Цен этого типа на дату нет'))))));
+}
+
+// ---------- клиенты ----------
+
+const partnersState = {archived: false};
+
+async function renderPartners(view) {
+    const partners = await api('GET', 'partners' + (partnersState.archived ? '?archived=1' : ''));
+    const name = el('input', {placeholder: 'Название или имя', required: true, size: 28});
+    const phone = el('input', {placeholder: 'Телефон', size: 16});
+    const note = el('input', {placeholder: 'Примечание', size: 28});
+    const form = el('form', {
+        class: 'inline',
+        onsubmit: async e => {
+            e.preventDefault();
+            if (await attempt(() => api('POST', 'partners', {name: name.value, phone: phone.value, note: note.value}), 'Клиент добавлен')) {
+                route();
+            }
+        },
+    }, name, phone, note, el('button', {class: 'primary'}, 'Добавить'));
+    render(view,
+        el('h2', {}, 'Клиенты'),
+        form,
+        el('div', {class: 'toolbar', style: 'margin-top: 12px'},
+            el('label', {class: 'check'},
+                el('input', {type: 'checkbox', checked: partnersState.archived, onchange: e => { partnersState.archived = e.target.checked; route(); }}),
+                'показать архив')),
+        el('div', {class: 'table-wrap'}, el('table', {},
+            el('thead', {}, el('tr', {}, el('th', {}, 'Клиент'), el('th', {}, 'Телефон'), el('th', {}, 'Примечание'))),
+            el('tbody', {}, partners.length
+                ? partners.map(p => el('tr', {class: 'link' + (p.archived ? ' archived' : ''), onclick: () => { location.hash = '#/partners/' + p.id; }},
+                    el('td', {}, p.name, p.archived ? el('span', {class: 'muted'}, ' (архив)') : null),
+                    el('td', {}, p.phone),
+                    el('td', {class: 'muted'}, p.note)))
+                : el('tr', {}, el('td', {colspan: 3, class: 'muted'}, 'Клиентов нет'))))));
+}
+
+async function renderPartner(view, id) {
+    const p = await api('GET', `partners/${id}`);
+    const name = el('input', {value: p.name, size: 28});
+    const phone = el('input', {value: p.phone, size: 16});
+    const note = el('input', {value: p.note, size: 40});
+    const archived = el('input', {type: 'checkbox', checked: p.archived});
+    const save = async () => {
+        if (await attempt(() => api('PUT', `partners/${id}`, {name: name.value, phone: phone.value, note: note.value, archived: archived.checked}), 'Сохранено')) {
+            route();
+        }
+    };
+    const remove = async () => {
+        if (confirm(`Удалить клиента «${p.name}»?`) && await attempt(() => api('DELETE', `partners/${id}`), 'Клиент удалён')) {
+            location.hash = '#/partners';
+        }
+    };
+    render(view,
+        el('a', {class: 'back', href: '#/partners'}, '← Клиенты'),
+        el('h2', {}, p.name),
+        el('div', {class: 'fields'},
+            el('label', {}, 'Название', name),
+            el('label', {}, 'Телефон', phone),
+            el('label', {}, 'Примечание', note),
+            el('label', {class: 'check'}, archived, 'в архиве'),
+            el('button', {class: 'primary', onclick: save}, 'Сохранить'),
+            el('button', {class: 'danger', onclick: remove}, 'Удалить')));
 }
 
 // ---------- остатки ----------
@@ -929,7 +1085,7 @@ async function renderRequirements(view, params) {
         el('div', {class: 'toolbar section-head', style: 'margin-top: 0'},
             el('h2', {}, 'Потребность' + (date ? ' на ' + humanDate(date) : '')),
             el('button', {class: 'primary no-print', onclick: () => window.print()}, 'Печать')),
-        el('p', {class: 'muted'}, 'Заявки: ' + orders.map(o => `№ ${o.number}${o.comment ? ' (' + o.comment + ')' : ''}`).join(', ')),
+        el('p', {class: 'muted'}, 'Заявки: ' + orders.map(o => `№ ${o.number}${orderFrom(o) ? ' (' + orderFrom(o) + ')' : ''}`).join(', ')),
         req.warnings.length ? el('div', {class: 'warnings'}, req.warnings.map(w => el('div', {}, '⚠ ' + w))) : null,
         needsTable('Произвести', req.products),
         needsTable('Полуфабрикаты', req.intermediates, 'Сколько приготовить, чтобы произвести продукцию выше.'),
@@ -961,6 +1117,10 @@ async function route() {
             await renderDoc(view, null, params);
         } else if (hash === '#/docs') {
             await renderDocs(view);
+        } else if (hash === '#/partners') {
+            await renderPartners(view);
+        } else if ((m = hash.match(/^#\/partners\/(\d+)$/))) {
+            await renderPartner(view, Number(m[1]));
         } else if (hash === '#/prices') {
             await renderPrices(view, params);
         } else if (hash === '#/stock') {

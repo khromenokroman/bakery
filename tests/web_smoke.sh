@@ -45,6 +45,8 @@ call POST "docs/$P2/post" '' >/dev/null
 V1=$(call POST price-types '{"name":"Вариант 1"}' | id)
 PR=$(call POST docs "{\"type\":\"prices\",\"date\":\"2026-10-10\",\"price_type_id\":1,\"lines\":[{\"item_id\":$BREAD,\"price_kop\":3120}]}" | id)
 call POST "docs/$PR/post" '' >/dev/null
+SHOP=$(call POST partners '{"name":"Колосок","phone":"+7 900"}' | id)
+SALE=$(call POST docs "{\"type\":\"sale\",\"date\":\"2026-10-12\",\"price_type_id\":$V1,\"partner_id\":$SHOP,\"lines\":[{\"item_id\":$COOKIE,\"qty\":500,\"price_kop\":52000},{\"item_id\":$BREAD,\"qty\":1000}]}" | id)
 O2=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"comment\":\"Магазин\",\"lines\":[{\"item_id\":$COOKIE,\"qty\":1500}]}" | id)
 
 PAGES=(
@@ -69,6 +71,10 @@ PAGES=(
     "prices?type=$V1&date=2026-10-12"
     "docs/$PR"
     "docs/new?type=prices&price_type=$V1"
+    "docs/$SALE"
+    "docs/new?type=sale"
+    "partners"
+    "partners/$SHOP"
 )
 
 failed=0

@@ -46,6 +46,8 @@ struct Document {
     std::string comment;
     std::string status = "draft";              ///< только для чтения
     std::optional<std::int64_t> price_type_id; ///< тип цен: установка цен, реализация
+    std::optional<std::int64_t> partner_id;    ///< клиент: заявка, реализация
+    std::string partner_name;                  ///< только для чтения
     std::int64_t id{};
     std::int64_t number{}; ///< только для чтения: присваивается при создании, сквозной в пределах вида
     DocType type = DocType::ORDER;
@@ -67,7 +69,7 @@ struct DocFilter {
 void check_date(std::string_view date);
 
 /**
- * @brief Документы: заявки (без движений), поступление из производства, установка цен.
+ * @brief Документы: заявки (без движений), поступление из производства, реализация, установка цен.
  *
  * В строки складских документов при сохранении записывается себестоимость на дату документа
  * (тип цен «Себестоимость»); установка цен действует после проведения.
@@ -125,6 +127,12 @@ class Documents {
 
     /// Строки документа doc.id; себестоимость для складских видов берётся на doc.date.
     void write_lines(Document const &doc);
+
+    /**
+     * @brief Проверки перед проведением: в реализации у каждой строки должна быть цена.
+     * @throws UserError со списком строк без цены
+     */
+    void check_postable(Document const &doc) const;
 
     /// Движения склада по строкам документа на его дату, со знаком его вида.
     void write_moves(Document const &doc);

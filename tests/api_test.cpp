@@ -405,3 +405,59 @@ TEST(ApiPrices, TypesPriceListAndCost) {
     EXPECT_EQ(r.status, 400);
     EXPECT_THAT(r.body.value("error", ""), HasSubstr("встроенный"));
 }
+
+/**
+ * @brief Реализация через API: клиент, цена из типа, проведение, отказ без цены, справочник клиентов.
+ */
+TEST(ApiSales, SaleWithPartner) {
+    TestServer srv;
+    auto r = CALL(srv, "POST", "/api/partners", {{"name", "Колосок"}, {"phone", "+7 900"}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    auto const shop = r.body.at("id");
+    auto const v1 = CALL(srv, "POST", "/api/price-types", {{"name", "Вариант 1"}}).body.at("id");
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    auto const cake = CALL(srv, "POST", "/api/items", {{"name", "Торт"}, {"kind", "product"}, {"unit", "kg"}}).body.at("id");
+    auto id = CALL(srv, "POST", "/api/docs",
+                   {{"type", "prices"}, {"date", "2026-10-10"}, {"price_type_id", v1}, {"lines", {{{"item_id", bread}, {"price_kop", 4500}}}}})
+                  .body.at("id");
+    CALL(srv, "POST", "/api/docs/" + id.dump() + "/post");
+    id = CALL(srv, "POST", "/api/docs",
+              {{"type", "production"}, {"date", "2026-10-11"}, {"lines", {{{"item_id", bread}, {"qty", 40000}}, {{"item_id", cake}, {"qty", 5000}}}}})
+             .body.at("id");
+    CALL(srv, "POST", "/api/docs/" + id.dump() + "/post");
+
+    r = CALL(srv, "POST", "/api/docs",
+             {{"type", "sale"},
+              {"date", "2026-10-12"},
+              {"price_type_id", v1},
+              {"partner_id", shop},
+              {"lines", {{{"item_id", bread}, {"qty", 30000}}, {{"item_id", cake}, {"qty", 1000}}}}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    EXPECT_EQ(r.body.at("partner_name"), "Колосок");
+    EXPECT_EQ(r.body.at("lines").at(0).at("price_kop"), 4500) << r.body;
+    EXPECT_TRUE(r.body.at("lines").at(1).at("price_kop").is_null()) << r.body;
+    auto const sale = r.body.at("id").dump();
+
+    r = CALL(srv, "POST", "/api/docs/" + sale + "/post");
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("нет цены в типе «Вариант 1» на 12.10.2026: Торт"));
+
+    r = CALL(srv, "PUT", "/api/docs/" + sale,
+             {{"date", "2026-10-12"},
+              {"price_type_id", v1},
+              {"partner_id", shop},
+              {"lines", {{{"item_id", bread}, {"qty", 30000}}, {{"item_id", cake}, {"qty", 1000}, {"price_kop", 70000}}}}});
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_EQ(CALL(srv, "POST", "/api/docs/" + sale + "/post").status, 200);
+    r = CALL(srv, "GET", "/api/stock");
+    EXPECT_EQ(r.body.at(0).at("qty"), 10000) << r.body;
+
+    EXPECT_EQ(CALL(srv, "GET", "/api/partners").body.size(), 1U);
+    r = CALL(srv, "DELETE", "/api/partners/" + shop.dump());
+    EXPECT_EQ(r.status, 400);
+    r = CALL(srv, "PUT", "/api/partners/" + shop.dump(), {{"archived", true}});
+    EXPECT_EQ(r.body.at("archived"), true);
+    EXPECT_EQ(r.body.at("phone"), "+7 900") << "незаданные поля не меняются";
+    EXPECT_EQ(CALL(srv, "GET", "/api/partners").body.size(), 0U);
+    EXPECT_EQ(CALL(srv, "GET", "/api/partners?archived=1").body.size(), 1U);
+}

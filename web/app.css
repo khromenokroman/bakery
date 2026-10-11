@@ -186,6 +186,27 @@ input.money {
     text-align: right;
 }
 
+input.money.manual {
+    border-color: var(--accent);
+    background: #fff6e0;
+}
+
+input.money.missing {
+    border-color: var(--error-fg);
+    background: var(--error-bg);
+}
+
+.totals {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    margin-top: 12px;
+}
+
+.error-text {
+    color: var(--error-fg);
+}
+
 input.qty {
     width: 7em;
     text-align: right;

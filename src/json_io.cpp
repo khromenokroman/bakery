@@ -140,6 +140,8 @@ nlohmann::json to_json(Document const &doc) {
         {"status", doc.status},
         {"comment", doc.comment},
         {"price_type_id", optional_json(doc.price_type_id)},
+        {"partner_id", optional_json(doc.partner_id)},
+        {"partner_name", doc.partner_name},
         {"lines", lines},
     };
 }
@@ -174,6 +176,7 @@ Document document_from_json(nlohmann::json const &j) {
     }
     doc.date = get_string(j, "date");
     doc.price_type_id = get_optional_id(j, "price_type_id", std::nullopt);
+    doc.partner_id = get_optional_id(j, "partner_id", std::nullopt);
     if (j.contains("comment")) {
         doc.comment = get_string(j, "comment");
     }
@@ -238,4 +241,26 @@ nlohmann::json to_json(PriceRow const &row) {
         {"item_id", row.item_id},     {"name", row.name}, {"unit", to_string(row.unit)},
         {"price_kop", row.price_kop}, {"date", row.date}, {"doc_id", row.doc_id},
     };
+}
+
+nlohmann::json to_json(Partner const &partner) {
+    return {
+        {"id", partner.id}, {"name", partner.name}, {"phone", partner.phone}, {"note", partner.note}, {"archived", partner.archived},
+    };
+}
+
+Partner partner_from_json(nlohmann::json const &j, Partner base) {
+    if (j.contains("name")) {
+        base.name = get_string(j, "name");
+    }
+    if (j.contains("phone")) {
+        base.phone = get_string(j, "phone");
+    }
+    if (j.contains("note")) {
+        base.note = get_string(j, "note");
+    }
+    if (auto const archived = get_bool(j, "archived")) {
+        base.archived = *archived;
+    }
+    return base;
 }

@@ -18,6 +18,7 @@ SCENARIOS=(
     "order_new.js|#/orders/new?date=2026-10-13"
     "groups.js|#/items"
     "prices.js|#/prices"
+    "sale.js|#/docs"
 )
 
 failed=0

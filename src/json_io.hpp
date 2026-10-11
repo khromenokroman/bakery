@@ -8,6 +8,7 @@
 #include "catalog.hpp"
 #include "docs.hpp"
 #include "groups.hpp"
+#include "partners.hpp"
 #include "prices.hpp"
 #include "requirements.hpp"
 #include "stock.hpp"
@@ -61,3 +62,7 @@
 
 [[nodiscard]] nlohmann::json to_json(PriceType const &type);
 [[nodiscard]] nlohmann::json to_json(PriceRow const &row);
+
+[[nodiscard]] nlohmann::json to_json(Partner const &partner);
+/// Поля клиента из запроса поверх base; отсутствующие остаются как в base.
+[[nodiscard]] Partner partner_from_json(nlohmann::json const &j, Partner base);

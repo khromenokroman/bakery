@@ -6,6 +6,7 @@
 #include "db.hpp"
 #include "docs.hpp"
 #include "groups.hpp"
+#include "partners.hpp"
 #include "prices.hpp"
 #include "stock.hpp"
 
@@ -43,11 +44,13 @@ class Api {
     void register_docs(httplib::Server &server);
     void register_groups(httplib::Server &server);
     void register_prices(httplib::Server &server);
+    void register_partners(httplib::Server &server);
 
     std::string m_web_dir;
     Catalog m_catalog;
     Groups m_groups;
     Prices m_prices;
+    Partners m_partners;
     Documents m_docs;
     Stock m_stock;
     Database &m_db;

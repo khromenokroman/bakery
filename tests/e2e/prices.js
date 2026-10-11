@@ -45,4 +45,5 @@ const cells = [...row.cells].map(c => c.textContent.replace(/\u00a0/g, ' ').trim
 log.push('строка поступления: ' + cells.filter(Boolean).join(' | '));
 expect(cells.includes('31,20'), 'себестоимость не подставилась при выборе батона');
 expect(cells.includes('1 248,00'), 'сумма себестоимости не посчиталась: 40 × 31,20');
-expect(document.querySelector('tfoot').textContent.replace(/\u00a0/g, ' ').includes('1 248,00'), 'итог себестоимости: ' + document.querySelector('tfoot').textContent);
+const totals = document.querySelector('.totals').textContent.replace(/\u00a0/g, ' ');
+expect(totals.includes('Себестоимость: 1 248,00'), 'итог себестоимости: ' + totals);

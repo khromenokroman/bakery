@@ -66,7 +66,7 @@ std::int64_t path_id(httplib::Request const &req) {
 } // namespace
 
 Api::Api(Database &db, std::string web_dir)
-    : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_groups{db}, m_prices{db}, m_docs{db}, m_stock{db}, m_db{db} {}
+    : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_groups{db}, m_prices{db}, m_partners{db}, m_docs{db}, m_stock{db}, m_db{db} {}
 
 Api::Handler Api::guarded(Handler handler) {
     return [this, handler = std::move(handler)](httplib::Request const &req, httplib::Response &res) {
@@ -89,6 +89,7 @@ void Api::register_routes(httplib::Server &server) {
     register_docs(server);
     register_groups(server);
     register_prices(server);
+    register_partners(server);
 
     if (!m_web_dir.empty() && !server.set_mount_point("/", m_web_dir)) {
         throw std::runtime_error("каталог веб-интерфейса не найден: " + m_web_dir);
@@ -326,4 +327,35 @@ void Api::register_prices(httplib::Server &server) {
                    }
                    send_json(res, out);
                }));
+}
+
+void Api::register_partners(httplib::Server &server) {
+    server.Get("/api/partners", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto out = nlohmann::json::array();
+                   for (auto const &p : m_partners.list(req.get_param_value("archived") == "1")) {
+                       out.push_back(to_json(p));
+                   }
+                   send_json(res, out);
+               }));
+
+    server.Post("/api/partners", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                    auto const j = parse_object(req.body);
+                    (void)get_string(j, "name");
+                    auto const id = m_partners.create(partner_from_json(j, {}));
+                    send_json(res, to_json(m_partners.get(id)), 201);
+                }));
+
+    server.Get("/api/partners/:id",
+               guarded([this](httplib::Request const &req, httplib::Response &res) { send_json(res, to_json(m_partners.get(path_id(req)))); }));
+
+    server.Put("/api/partners/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto const id = path_id(req);
+                   m_partners.update(partner_from_json(parse_object(req.body), m_partners.get(id)));
+                   send_json(res, to_json(m_partners.get(id)));
+               }));
+
+    server.Delete("/api/partners/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                      m_partners.remove(path_id(req));
+                      send_json(res, nlohmann::json::object());
+                  }));
 }
