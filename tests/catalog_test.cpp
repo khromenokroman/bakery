@@ -38,7 +38,7 @@ TEST_F(CatalogTest, ListOrderAndKindFilter) {
     add("Тесто", Kind::SEMI);
     add("Багет", Kind::PRODUCT, Unit::PCS);
     EXPECT_THAT(names(), ElementsAre("Багет", "Батон", "Тесто", "Мука"));
-    EXPECT_THAT(names({Kind::SEMI, false}), ElementsAre("Тесто")) << "фильтр kind=semi";
+    EXPECT_THAT(names({.kind = Kind::SEMI}), ElementsAre("Тесто")) << "фильтр kind=semi";
 }
 
 /**
@@ -63,7 +63,7 @@ TEST_F(CatalogTest, ArchiveHidesFromList) {
     item.archived = true;
     m_catalog.update(item);
     EXPECT_THAT(names(), ElementsAre("Мука")) << "архивный «Изюм» не должен попадать в список по умолчанию";
-    EXPECT_THAT(names({std::nullopt, true}), ElementsAre("Изюм", "Мука"));
+    EXPECT_THAT(names({.with_archived = true}), ElementsAre("Изюм", "Мука"));
 }
 
 /**

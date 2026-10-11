@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "errors.hpp"
+#include "groups.hpp"
 
 namespace {
 
@@ -69,11 +70,22 @@ Item read_item(Statement const &stmt) {
     item.unit = unit_from_string(stmt.column_text(3));
     item.archived = stmt.column_int(4) != 0;
     item.has_recipe = stmt.column_int(5) != 0;
+    if (!stmt.column_is_null(6)) {
+        item.group_id = stmt.column_int(6);
+    }
     return item;
 }
 
 constexpr char const SELECT_ITEM[] =
-    "SELECT i.id, i.name, i.kind, i.unit, i.archived, r.item_id IS NOT NULL FROM items i LEFT JOIN recipes r ON r.item_id = i.id ";
+    "SELECT i.id, i.name, i.kind, i.unit, i.archived, r.item_id IS NOT NULL, i.group_id FROM items i LEFT JOIN recipes r ON r.item_id = i.id ";
+
+void bind_group(Statement &stmt, int index, std::optional<std::int64_t> group) {
+    if (group) {
+        stmt.bind(index, *group);
+    } else {
+        stmt.bind_null(index);
+    }
+}
 
 } // namespace
 
@@ -118,13 +130,18 @@ Catalog::Catalog(Database &db) : m_db{db} {}
 std::vector<Item> Catalog::list(ItemFilter const &filter) const {
     std::string sql = SELECT_ITEM;
     sql +=
-        "WHERE (?1 IS NULL OR i.kind = ?1) AND (?2 OR i.archived = 0) ORDER BY "
+        "WHERE (?1 IS NULL OR i.kind = ?1) AND (?2 OR i.archived = 0) "
+        "AND (?3 IS NULL OR i.group_id IN (WITH RECURSIVE sub(id) AS (SELECT ?3 UNION SELECT g.id FROM groups g JOIN sub ON g.parent_id = sub.id) "
+        "SELECT id FROM sub)) ORDER BY "
         "CASE i.kind WHEN 'product' THEN 0 WHEN 'semi' THEN 1 ELSE 2 END, i.name";
     auto stmt = m_db.prepare(sql);
     if (filter.kind) {
         stmt.bind(1, to_string(*filter.kind));
     }
     stmt.bind(2, static_cast<std::int64_t>(filter.with_archived));
+    if (filter.group) {
+        stmt.bind(3, *filter.group);
+    }
     std::vector<Item> items;
     while (stmt.step()) {
         items.push_back(read_item(stmt));
@@ -150,8 +167,10 @@ std::int64_t Catalog::create(Item const &item) {
     if (dup.column_int(0) != 0) {
         throw UserError("позиция «" + name + "» уже есть");
     }
-    auto stmt = m_db.prepare("INSERT INTO items (name, kind, unit, archived) VALUES (?, ?, ?, ?)");
+    check_group(item.group_id);
+    auto stmt = m_db.prepare("INSERT INTO items (name, kind, unit, archived, group_id) VALUES (?, ?, ?, ?, ?)");
     stmt.bind(1, name).bind(2, to_string(item.kind)).bind(3, to_string(item.unit)).bind(4, static_cast<std::int64_t>(item.archived));
+    bind_group(stmt, 5, item.group_id);
     stmt.step();
     auto const id = m_db.last_insert_id();
     tx.commit();
@@ -185,8 +204,11 @@ void Catalog::update(Item const &item) {
         }
     }
 
-    auto stmt = m_db.prepare("UPDATE items SET name = ?, kind = ?, unit = ?, archived = ? WHERE id = ?");
-    stmt.bind(1, name).bind(2, to_string(item.kind)).bind(3, to_string(item.unit)).bind(4, static_cast<std::int64_t>(item.archived)).bind(5, item.id);
+    check_group(item.group_id);
+    auto stmt = m_db.prepare("UPDATE items SET name = ?, kind = ?, unit = ?, archived = ?, group_id = ? WHERE id = ?");
+    stmt.bind(1, name).bind(2, to_string(item.kind)).bind(3, to_string(item.unit)).bind(4, static_cast<std::int64_t>(item.archived));
+    bind_group(stmt, 5, item.group_id);
+    stmt.bind(6, item.id);
     stmt.step();
     tx.commit();
 }
@@ -297,6 +319,12 @@ void Catalog::remove_recipe(std::int64_t item_id) {
     auto stmt = m_db.prepare("DELETE FROM recipes WHERE item_id = ?");
     stmt.bind(1, item_id);
     stmt.step();
+}
+
+void Catalog::check_group(std::optional<std::int64_t> group) const {
+    if (group) {
+        (void)Groups{m_db}.get(*group);
+    }
 }
 
 std::vector<std::int64_t> Catalog::find_path(std::int64_t from, std::int64_t to) const {

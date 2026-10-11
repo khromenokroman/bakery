@@ -12,6 +12,7 @@
  */
 struct Balance {
     std::string name;
+    std::optional<std::int64_t> group_id;
     std::int64_t item_id{};
     std::int64_t qty{}; ///< тысячные доли единицы
     Unit unit = Unit::PCS;
@@ -34,8 +35,9 @@ class Stock {
 
     /**
      * @brief Ненулевые остатки на конец дня date (все движения, если nullopt), по названию.
+     * @param group только позиции группы и её подгрупп
      */
-    [[nodiscard]] std::vector<Balance> balances(std::optional<std::string> const &date) const;
+    [[nodiscard]] std::vector<Balance> balances(std::optional<std::string> const &date, std::optional<std::int64_t> group = std::nullopt) const;
 
     /**
      * @brief Проверяет, что остаток каждой позиции из items не меньше нуля на конец любого дня.

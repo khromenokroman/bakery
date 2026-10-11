@@ -35,12 +35,17 @@ std::string format_qty(std::int64_t milli, Unit unit) {
 
 Stock::Stock(Database &db) : m_db{db} {}
 
-std::vector<Balance> Stock::balances(std::optional<std::string> const &date) const {
+std::vector<Balance> Stock::balances(std::optional<std::string> const &date, std::optional<std::int64_t> group) const {
     auto stmt = m_db.prepare(
-        "SELECT m.item_id, i.name, i.unit, i.archived, sum(m.qty) FROM stock_moves m JOIN items i ON i.id = m.item_id "
-        "WHERE ?1 IS NULL OR m.date <= ?1 GROUP BY m.item_id HAVING sum(m.qty) <> 0 ORDER BY i.name");
+        "SELECT m.item_id, i.name, i.unit, i.archived, sum(m.qty), i.group_id FROM stock_moves m JOIN items i ON i.id = m.item_id "
+        "WHERE (?1 IS NULL OR m.date <= ?1) AND (?2 IS NULL OR i.group_id IN (WITH RECURSIVE sub(id) AS (SELECT ?2 UNION SELECT g.id FROM groups g "
+        "JOIN sub ON g.parent_id = sub.id) SELECT id FROM sub)) "
+        "GROUP BY m.item_id HAVING sum(m.qty) <> 0 ORDER BY i.name");
     if (date) {
         stmt.bind(1, *date);
+    }
+    if (group) {
+        stmt.bind(2, *group);
     }
     std::vector<Balance> out;
     while (stmt.step()) {
@@ -50,6 +55,9 @@ std::vector<Balance> Stock::balances(std::optional<std::string> const &date) con
         b.unit = unit_from_string(stmt.column_text(2));
         b.archived = stmt.column_int(3) != 0;
         b.qty = stmt.column_int(4);
+        if (!stmt.column_is_null(5)) {
+            b.group_id = stmt.column_int(5);
+        }
         out.push_back(std::move(b));
     }
     return out;

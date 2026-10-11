@@ -325,3 +325,47 @@ TEST(ApiStock, ProductionPostUnpost) {
     EXPECT_TRUE(CALL(srv, "GET", "/api/stock").body.empty()) << "после отмены проведения";
     EXPECT_EQ(CALL(srv, "GET", "/api/stock?date=12.10.2026").status, 400);
 }
+
+/**
+ * @brief Группы через API: дерево, позиция в группе, фильтры номенклатуры и остатков с подгруппами, ошибки.
+ */
+TEST(ApiGroups, TreeAndFilters) {
+    TestServer srv;
+    auto r = CALL(srv, "POST", "/api/groups", {{"name", "Кондитерка"}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    auto const pastry = r.body.at("id");
+    EXPECT_TRUE(r.body.at("parent_id").is_null());
+    auto const cakes = CALL(srv, "POST", "/api/groups", {{"name", "Торты"}, {"parent_id", pastry}}).body.at("id");
+
+    r = CALL(srv, "POST", "/api/items", {{"name", "Наполеон"}, {"kind", "product"}, {"unit", "kg"}, {"group_id", cakes}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    EXPECT_EQ(r.body.at("group_id"), cakes);
+    auto const napoleon = r.body.at("id");
+    CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}});
+
+    EXPECT_EQ(CALL(srv, "GET", "/api/items?group=" + pastry.dump()).body.size(), 1U) << "Наполеон через подгруппу";
+    EXPECT_EQ(CALL(srv, "GET", "/api/items").body.size(), 2U);
+
+    auto const doc =
+        CALL(srv, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-12"}, {"lines", {{{"item_id", napoleon}, {"qty", 2500}}}}})
+            .body.at("id");
+    CALL(srv, "POST", "/api/docs/" + doc.dump() + "/post");
+    r = CALL(srv, "GET", "/api/stock?group=" + pastry.dump());
+    ASSERT_EQ(r.body.size(), 1U) << r.body;
+    EXPECT_EQ(r.body.at(0).at("group_id"), cakes);
+
+    r = CALL(srv, "PUT", "/api/groups/" + pastry.dump(), {{"name", "Кондитерка"}, {"parent_id", cakes}});
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("нельзя вложить в саму себя"));
+
+    r = CALL(srv, "DELETE", "/api/groups/" + cakes.dump());
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("есть позиции"));
+
+    r = CALL(srv, "PUT", "/api/items/" + napoleon.dump(), {{"group_id", nullptr}});
+    EXPECT_TRUE(r.body.at("group_id").is_null()) << "убрать из группы через null: " << r.body;
+    EXPECT_EQ(CALL(srv, "DELETE", "/api/groups/" + cakes.dump()).status, 200);
+    EXPECT_EQ(CALL(srv, "GET", "/api/groups").body.size(), 1U);
+    EXPECT_EQ(CALL(srv, "GET", "/api/stock?group=abc").status, 400);
+    EXPECT_EQ(CALL(srv, "GET", "/api/stock?group=999").status, 404);
+}

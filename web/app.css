@@ -59,7 +59,7 @@ nav a.disabled {
 
 main {
     padding: 16px;
-    max-width: 960px;
+    max-width: 1100px;
 }
 
 h2 {
@@ -250,6 +250,47 @@ table.needs {
     margin-top: 24px;
 }
 
+.split {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.split-main {
+    flex: 1 1 480px;
+    min-width: 0;
+}
+
+aside.groups {
+    flex: 0 0 220px;
+}
+
+.tree {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: #fff;
+    padding: 4px 0;
+}
+
+.tree-node {
+    padding: 4px 8px;
+    cursor: pointer;
+}
+
+.tree-node:hover {
+    background: #f1ece4;
+}
+
+.tree-node.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+aside.groups .panel label {
+    margin-bottom: 6px;
+}
+
 .status {
     margin-left: 12px;
     padding: 2px 8px;
@@ -279,6 +320,47 @@ td .actions {
 
 .section-head {
     margin-top: 24px;
+}
+
+.split {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.split-main {
+    flex: 1 1 480px;
+    min-width: 0;
+}
+
+aside.groups {
+    flex: 0 0 220px;
+}
+
+.tree {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: #fff;
+    padding: 4px 0;
+}
+
+.tree-node {
+    padding: 4px 8px;
+    cursor: pointer;
+}
+
+.tree-node:hover {
+    background: #f1ece4;
+}
+
+.tree-node.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+aside.groups .panel label {
+    margin-bottom: 6px;
 }
 
 .status {

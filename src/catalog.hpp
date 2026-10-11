@@ -38,6 +38,7 @@ enum class Unit : std::uint8_t {
  */
 struct Item {
     std::string name;
+    std::optional<std::int64_t> group_id; ///< пустой - без группы
     std::int64_t id{};
     Kind kind = Kind::RAW;
     Unit unit = Unit::KG;
@@ -69,6 +70,7 @@ struct Recipe {
  */
 struct ItemFilter {
     std::optional<Kind> kind;
+    std::optional<std::int64_t> group; ///< группа вместе со всеми подгруппами
     bool with_archived = false;
 };
 
@@ -95,7 +97,7 @@ class Catalog {
     std::int64_t create(Item const &item);
 
     /**
-     * @brief Изменяет название, вид, единицу и признак архива.
+     * @brief Изменяет название, вид, единицу, группу и признак архива.
      *
      * Сырьё не может иметь рецептуру. Единицу нельзя менять, если позиция входит в рецептуры
      * или имеет свою: количества в них записаны в старой единице.
@@ -126,6 +128,9 @@ class Catalog {
     void remove_recipe(std::int64_t item_id);
 
    private:
+    /// @throws NotFoundError если группа указана, но её нет
+    void check_group(std::optional<std::int64_t> group) const;
+
     /// Путь от from до to по рецептурам (from, ..., to) или пустой, если to недостижим.
     [[nodiscard]] std::vector<std::int64_t> find_path(std::int64_t from, std::int64_t to) const;
 

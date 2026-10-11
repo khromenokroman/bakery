@@ -41,6 +41,17 @@ std::vector<std::int64_t> parse_ids(std::string const &text) {
     return ids;
 }
 
+/// id из параметра запроса.
+std::int64_t query_id(httplib::Request const &req, std::string const &key) {
+    auto const text = req.get_param_value(key);
+    std::int64_t id = 0;
+    auto const [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), id);
+    if (ec != std::errc{} || ptr != text.data() + text.size()) {
+        throw UserError("параметр " + key + " должен быть числом: " + text);
+    }
+    return id;
+}
+
 /// id из пути запроса; не число означает несуществующий объект.
 std::int64_t path_id(httplib::Request const &req) {
     auto const &text = req.path_params.at("id");
@@ -54,7 +65,7 @@ std::int64_t path_id(httplib::Request const &req) {
 
 } // namespace
 
-Api::Api(Database &db, std::string web_dir) : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_docs{db}, m_stock{db}, m_db{db} {}
+Api::Api(Database &db, std::string web_dir) : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_groups{db}, m_docs{db}, m_stock{db}, m_db{db} {}
 
 Api::Handler Api::guarded(Handler handler) {
     return [this, handler = std::move(handler)](httplib::Request const &req, httplib::Response &res) {
@@ -75,6 +86,7 @@ void Api::register_routes(httplib::Server &server) {
                }));
     register_catalog(server);
     register_docs(server);
+    register_groups(server);
 
     if (!m_web_dir.empty() && !server.set_mount_point("/", m_web_dir)) {
         throw std::runtime_error("каталог веб-интерфейса не найден: " + m_web_dir);
@@ -104,6 +116,9 @@ void Api::register_catalog(httplib::Server &server) {
                        filter.kind = kind_from_string(req.get_param_value("kind"));
                    }
                    filter.with_archived = req.get_param_value("archived") == "1";
+                   if (req.has_param("group")) {
+                       filter.group = query_id(req, "group");
+                   }
                    auto out = nlohmann::json::array();
                    for (auto const &item : m_catalog.list(filter)) {
                        out.push_back(to_json(item));
@@ -117,6 +132,7 @@ void Api::register_catalog(httplib::Server &server) {
                     item.name = get_string(j, "name");
                     item.kind = kind_from_string(get_string(j, "kind"));
                     item.unit = unit_from_string(get_string(j, "unit"));
+                    item.group_id = get_optional_id(j, "group_id", std::nullopt);
                     auto const id = m_catalog.create(item);
                     send_json(res, to_json(m_catalog.get(id)), 201);
                 }));
@@ -226,7 +242,12 @@ void Api::register_docs(httplib::Server &server) {
                        date = req.get_param_value("date");
                    }
                    auto out = nlohmann::json::array();
-                   for (auto const &b : m_stock.balances(date)) {
+                   std::optional<std::int64_t> group;
+                   if (req.has_param("group")) {
+                       group = query_id(req, "group");
+                       (void)m_groups.get(*group);
+                   }
+                   for (auto const &b : m_stock.balances(date, group)) {
                        out.push_back(to_json(b));
                    }
                    send_json(res, out);
@@ -235,4 +256,31 @@ void Api::register_docs(httplib::Server &server) {
     server.Get("/api/requirements", guarded([this](httplib::Request const &req, httplib::Response &res) {
                    send_json(res, to_json(compute_requirements(m_db, parse_ids(req.get_param_value("docs")))));
                }));
+}
+
+void Api::register_groups(httplib::Server &server) {
+    server.Get("/api/groups", guarded([this](httplib::Request const &, httplib::Response &res) {
+                   auto out = nlohmann::json::array();
+                   for (auto const &g : m_groups.list()) {
+                       out.push_back(to_json(g));
+                   }
+                   send_json(res, out);
+               }));
+
+    server.Post("/api/groups", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                    auto const id = m_groups.create(group_from_json(parse_object(req.body)));
+                    send_json(res, to_json(m_groups.get(id)), 201);
+                }));
+
+    server.Put("/api/groups/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto group = group_from_json(parse_object(req.body));
+                   group.id = path_id(req);
+                   m_groups.update(group);
+                   send_json(res, to_json(m_groups.get(group.id)));
+               }));
+
+    server.Delete("/api/groups/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                      m_groups.remove(path_id(req));
+                      send_json(res, nlohmann::json::object());
+                  }));
 }

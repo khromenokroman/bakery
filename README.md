@@ -17,6 +17,10 @@
 полуфабрикат или другая продукция, тогда при расчёте сырья он разворачивается по своей рецептуре.
 Циклы (торт → крем → торт) отклоняются с указанием пути.
 
+Номенклатура раскладывается по вложенным группам («Кондитерка / Торты»). Группа, выбранная в дереве,
+показывает свои позиции вместе с позициями всех подгрупп; так же работает фильтр по группе в остатках.
+Группу нельзя вложить в саму себя или в свою подгруппу, удалить можно только пустую.
+
 Позицию, которая входит в рецептуры или документы, удалить нельзя: её отправляют в архив. Архивная
 позиция остаётся в старых рецептурах, но в новые не добавляется. Единицу нельзя сменить, если
 в старой единице уже записаны количества (своя рецептура, чужие рецептуры, документы).
@@ -50,7 +54,8 @@
 задним числом сразу меняет остатки на все последующие даты. Остаток не может уйти в минус ни на конец
 какого-либо дня: например, нельзя отменить поступление, из которого уже продано.
 
-Раздел «Остатки» показывает остаток продукции на конец выбранного дня.
+Раздел «Остатки» показывает остаток продукции на конец выбранного дня, по всем группам или по одной
+вместе с подгруппами.
 
 ## Сборка
 
@@ -114,11 +119,15 @@ sqlite3 bakery.db ".backup bakery-$(date +%F).db"
 
 | Метод | Ответ |
 |---|---|
-| `GET /api/version` | `{"version": "0.5.0.0", "schema": 1}` |
-| `GET /api/items?kind=raw\|semi\|product&archived=1` | список позиций |
-| `POST /api/items` `{"name", "kind", "unit"}` | созданная позиция, код 201 |
-| `GET /api/items/{id}` | `{"id", "name", "kind", "unit", "archived", "has_recipe"}` |
-| `PUT /api/items/{id}` | изменение переданных полей из `name`, `kind`, `unit`, `archived` |
+| `GET /api/version` | `{"version": "0.6.0.0", "schema": 2}` |
+| `GET /api/groups` | `[{"id", "name", "parent_id"}]`, `parent_id` = `null` у верхнего уровня |
+| `POST /api/groups` `{"name", "parent_id"}` | созданная группа, код 201 |
+| `PUT /api/groups/{id}` `{"name", "parent_id"}` | переименование и перенос |
+| `DELETE /api/groups/{id}` | удаление пустой группы |
+| `GET /api/items?kind=raw\|semi\|product&archived=1&group={id}` | список позиций; `group` с подгруппами |
+| `POST /api/items` `{"name", "kind", "unit", "group_id"}` | созданная позиция, код 201 |
+| `GET /api/items/{id}` | `{"id", "name", "kind", "unit", "archived", "has_recipe", "group_id"}` |
+| `PUT /api/items/{id}` | изменение переданных полей из `name`, `kind`, `unit`, `archived`, `group_id` (`null` убирает из группы) |
 | `DELETE /api/items/{id}` | удаление неиспользуемой позиции |
 | `GET /api/items/{id}/recipe` | `{"output_qty", "lines": [{"component_id", "name", "kind", "unit", "qty"}]}` или `null` |
 | `PUT /api/items/{id}/recipe` `{"output_qty", "lines": [{"component_id", "qty"}]}` | замена рецептуры целиком |
@@ -130,7 +139,7 @@ sqlite3 bakery.db ".backup bakery-$(date +%F).db"
 | `DELETE /api/docs/{id}` | удаление документа |
 | `POST /api/docs/{id}/post` | проведение: движения склада, проверка минуса |
 | `POST /api/docs/{id}/unpost` | отмена проведения |
-| `GET /api/stock?date=ГГГГ-ММ-ДД` | `[{"item_id", "name", "unit", "qty", "archived"}]`, ненулевые остатки на конец дня |
+| `GET /api/stock?date=ГГГГ-ММ-ДД&group={id}` | `[{"item_id", "name", "unit", "qty", "archived", "group_id"}]`, ненулевые остатки на конец дня |
 | `GET /api/requirements?docs=1,2,3` | `{"products", "intermediates", "raw": [{"item_id", "name", "kind", "unit", "qty", "has_recipe"}], "warnings"}` |
 
 `kind`: `raw` сырьё, `semi` полуфабрикат, `product` продукция. `unit`: `kg`, `l`, `pcs`.

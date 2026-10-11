@@ -29,11 +29,13 @@ API=http://127.0.0.1:$PORT/api
 call() { curl -sf -X "$1" "$API/$2" -H 'Content-Type: application/json' -d "$3"; }
 id() { sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
 
+PASTRY=$(call POST groups '{"name":"Кондитерка"}' | id)
+CAKES=$(call POST groups "{\"name\":\"Торты\",\"parent_id\":$PASTRY}" | id)
 FLOUR=$(call POST items '{"name":"Мука","kind":"raw","unit":"kg"}' | id)
 EGG=$(call POST items '{"name":"Яйцо","kind":"raw","unit":"pcs"}' | id)
 DOUGH=$(call POST items '{"name":"Тесто","kind":"semi","unit":"kg"}' | id)
 BREAD=$(call POST items '{"name":"Батон","kind":"product","unit":"pcs"}' | id)
-COOKIE=$(call POST items '{"name":"Печенье","kind":"product","unit":"kg"}' | id)
+COOKIE=$(call POST items "{\"name\":\"Печенье\",\"kind\":\"product\",\"unit\":\"kg\",\"group_id\":$CAKES}" | id)
 call PUT "items/$DOUGH/recipe" "{\"output_qty\":1000,\"lines\":[{\"component_id\":$FLOUR,\"qty\":600}]}" >/dev/null
 call PUT "items/$BREAD/recipe" "{\"output_qty\":1000,\"lines\":[{\"component_id\":$DOUGH,\"qty\":450},{\"component_id\":$EGG,\"qty\":100}]}" >/dev/null
 O1=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"lines\":[{\"item_id\":$BREAD,\"qty\":10000}]}" | id)
@@ -58,6 +60,8 @@ PAGES=(
     "docs/$P2"
     "stock?date=2026-10-12"
     "stock?date=2026-10-01"
+    "stock?date=2026-10-12&group=$PASTRY"
+    "items/$COOKIE"
 )
 
 failed=0

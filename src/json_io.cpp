@@ -60,6 +60,7 @@ nlohmann::json to_json(Item const &item) {
         {"unit", to_string(item.unit)},
         {"archived", item.archived},
         {"has_recipe", item.has_recipe},
+        {"group_id", item.group_id ? nlohmann::json(*item.group_id) : nlohmann::json(nullptr)},
     };
 }
 
@@ -90,6 +91,7 @@ Item item_from_json(nlohmann::json const &j, Item base) {
     if (auto const archived = get_bool(j, "archived")) {
         base.archived = *archived;
     }
+    base.group_id = get_optional_id(j, "group_id", base.group_id);
     return base;
 }
 
@@ -173,6 +175,37 @@ Document document_from_json(nlohmann::json const &j) {
 
 nlohmann::json to_json(Balance const &balance) {
     return {
-        {"item_id", balance.item_id}, {"name", balance.name}, {"unit", to_string(balance.unit)}, {"qty", balance.qty}, {"archived", balance.archived},
+        {"item_id", balance.item_id},      {"name", balance.name},
+        {"unit", to_string(balance.unit)}, {"qty", balance.qty},
+        {"archived", balance.archived},    {"group_id", balance.group_id ? nlohmann::json(*balance.group_id) : nlohmann::json(nullptr)},
     };
+}
+
+std::optional<std::int64_t> get_optional_id(nlohmann::json const &j, std::string_view key, std::optional<std::int64_t> base) {
+    auto const it = j.find(key);
+    if (it == j.end()) {
+        return base;
+    }
+    if (it->is_null()) {
+        return std::nullopt;
+    }
+    if (!it->is_number_integer()) {
+        throw UserError("поле " + std::string(key) + " должно быть целым числом или null");
+    }
+    return it->get<std::int64_t>();
+}
+
+nlohmann::json to_json(Group const &group) {
+    return {
+        {"id", group.id},
+        {"name", group.name},
+        {"parent_id", group.parent_id ? nlohmann::json(*group.parent_id) : nlohmann::json(nullptr)},
+    };
+}
+
+Group group_from_json(nlohmann::json const &j) {
+    Group g;
+    g.name = get_string(j, "name");
+    g.parent_id = get_optional_id(j, "parent_id", std::nullopt);
+    return g;
 }

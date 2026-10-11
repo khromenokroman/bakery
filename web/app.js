@@ -94,7 +94,123 @@ async function attempt(action, okText) {
 
 // ---------- номенклатура: список ----------
 
-const listState = {kind: '', archived: false};
+// ---------- группы ----------
+
+/** Группы в порядке дерева: [{group, depth}], соседи по названию. */
+function groupTree(groups) {
+    const children = new Map();
+    for (const g of groups) {
+        const key = g.parent_id ?? 0;
+        children.set(key, [...(children.get(key) || []), g]);
+    }
+    const out = [];
+    const walk = (parent, depth) => {
+        for (const g of (children.get(parent) || []).sort((a, b) => a.name.localeCompare(b.name, 'ru'))) {
+            out.push({group: g, depth});
+            walk(g.id, depth + 1);
+        }
+    };
+    walk(0, 0);
+    return out;
+}
+
+/** Путь группы: "Кондитерка / Торты". */
+function groupPath(groups, id) {
+    const byId = new Map(groups.map(g => [g.id, g]));
+    const names = [];
+    for (let g = byId.get(id); g && names.length < 100; g = byId.get(g.parent_id)) {
+        names.unshift(g.name);
+    }
+    return names.join(' / ');
+}
+
+/** Группа и все её подгруппы. */
+function groupWithDescendants(groups, id) {
+    const out = new Set([id]);
+    let grown = true;
+    while (grown) {
+        grown = false;
+        for (const g of groups) {
+            if (g.parent_id !== null && out.has(g.parent_id) && !out.has(g.id)) {
+                out.add(g.id);
+                grown = true;
+            }
+        }
+    }
+    return out;
+}
+
+/** <option> для выбора группы с отступами по вложенности; exclude - id, которых не показывать. */
+function groupOptions(groups, selected, emptyText, exclude = new Set()) {
+    return [
+        el('option', {value: '', selected: selected === null || selected === undefined}, emptyText),
+        ...groupTree(groups).filter(({group}) => !exclude.has(group.id)).map(({group, depth}) =>
+            el('option', {value: group.id, selected: group.id === selected}, '   '.repeat(depth) + group.name)),
+    ];
+}
+
+const selectValue = select => (select.value ? Number(select.value) : null);
+
+// ---------- номенклатура: список ----------
+
+const listState = {kind: '', archived: false, group: null};
+
+/**
+ * Дерево групп слева от списка: выбор группы, создание подгруппы, переименование и перенос.
+ */
+function groupsPanel(groups) {
+    const selected = listState.group;
+    const node = (id, text, depth) => el('div', {
+        class: 'tree-node' + (selected === id ? ' active' : ''),
+        style: `padding-left: ${8 + depth * 16}px`,
+        onclick: () => { listState.group = id; route(); },
+    }, text);
+
+    const editor = el('div', {class: 'panel', hidden: true});
+    const openEditor = () => {
+        const g = groups.find(x => x.id === selected);
+        const name = el('input', {value: g.name, size: 20});
+        const parent = el('select', {}, groupOptions(groups, g.parent_id, '— верхний уровень —', groupWithDescendants(groups, g.id)));
+        editor.replaceChildren(
+            el('label', {}, 'Название', name),
+            el('label', {}, 'Входит в', parent),
+            el('div', {class: 'toolbar', style: 'margin-top: 8px'},
+                el('button', {class: 'primary', onclick: async () => {
+                    if (await attempt(() => api('PUT', `groups/${g.id}`, {name: name.value, parent_id: selectValue(parent)}), 'Группа сохранена')) {
+                        route();
+                    }
+                }}, 'Сохранить'),
+                el('button', {class: 'danger', onclick: async () => {
+                    if (confirm(`Удалить группу «${g.name}»?`) && await attempt(() => api('DELETE', `groups/${g.id}`), 'Группа удалена')) {
+                        listState.group = null;
+                        route();
+                    }
+                }}, 'Удалить'),
+                el('button', {onclick: () => { editor.hidden = true; }}, 'Отмена')));
+        editor.hidden = false;
+    };
+    const addGroup = async () => {
+        const where = selected ? `в «${groupPath(groups, selected)}»` : 'на верхнем уровне';
+        const name = prompt(`Новая группа ${where}:`);
+        if (!name) {
+            return;
+        }
+        let created;
+        if (await attempt(async () => { created = await api('POST', 'groups', {name, parent_id: selected}); }, 'Группа создана')) {
+            listState.group = created.id;
+            route();
+        }
+    };
+
+    return el('aside', {class: 'groups'},
+        el('div', {class: 'tree'},
+            node(null, 'Все группы', 0),
+            groupTree(groups).map(({group, depth}) => node(group.id, group.name, depth + 1))),
+        el('div', {class: 'toolbar', style: 'margin-top: 8px'},
+            el('button', {onclick: addGroup}, '+ группа'),
+            selected ? el('button', {onclick: openEditor}, 'Изменить') : null),
+        editor);
+}
 
 async function renderItems(view) {
     const query = new URLSearchParams();
@@ -103,6 +219,13 @@ async function renderItems(view) {
     }
     if (listState.archived) {
         query.set('archived', '1');
+    }
+    const groups = await api('GET', 'groups');
+    if (listState.group && !groups.some(g => g.id === listState.group)) {
+        listState.group = null;
+    }
+    if (listState.group) {
+        query.set('group', listState.group);
     }
     const items = await api('GET', 'items?' + query);
 
@@ -119,21 +242,22 @@ async function renderItems(view) {
             }),
             'показать архив'));
 
-    const name = el('input', {name: 'name', placeholder: 'Название', required: true, size: 30});
+    const name = el('input', {name: 'name', placeholder: 'Название', required: true, size: 24});
     const kind = el('select', {name: 'kind'}, options(KINDS, listState.kind || 'product'));
     const unit = el('select', {name: 'unit'}, options(UNITS, 'pcs'));
+    const group = el('select', {name: 'group'}, groupOptions(groups, listState.group, '— без группы —'));
     const form = el('form', {
         class: 'inline',
         onsubmit: async e => {
             e.preventDefault();
             let created;
             if (await attempt(async () => {
-                created = await api('POST', 'items', {name: name.value, kind: kind.value, unit: unit.value});
+                created = await api('POST', 'items', {name: name.value, kind: kind.value, unit: unit.value, group_id: selectValue(group)});
             }, '')) {
                 location.hash = '#/items/' + created.id;
             }
         },
-    }, name, kind, unit, el('button', {class: 'primary'}, 'Добавить'));
+    }, name, kind, unit, group, el('button', {class: 'primary'}, 'Добавить'));
 
     const rows = items.map(item => el('tr', {
             class: 'link' + (item.archived ? ' archived' : ''),
@@ -142,35 +266,41 @@ async function renderItems(view) {
         el('td', {}, item.name, item.archived ? el('span', {class: 'muted'}, ' (архив)') : null),
         el('td', {}, KINDS[item.kind]),
         el('td', {}, UNITS[item.unit]),
+        el('td', {class: 'muted'}, item.group_id ? groupPath(groups, item.group_id) : ''),
         el('td', {}, item.kind === 'raw' ? '' : item.has_recipe ? 'есть' : el('span', {class: 'muted'}, 'нет'))));
 
     render(view,
         el('h2', {}, 'Номенклатура'),
         form,
-        el('div', {style: 'height: 16px'}),
-        tabs,
-        el('div', {class: 'table-wrap'}, el('table', {},
-            el('thead', {}, el('tr', {}, el('th', {}, 'Название'), el('th', {}, 'Вид'), el('th', {}, 'Ед.'), el('th', {}, 'Рецептура'))),
-            el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 4, class: 'muted'}, 'Пусто'))))));
+        el('div', {class: 'split'},
+            groupsPanel(groups),
+            el('div', {class: 'split-main'},
+                el('h3', {style: 'margin-top: 0'}, listState.group ? groupPath(groups, listState.group) : 'Все группы'),
+                tabs,
+                el('div', {class: 'table-wrap'}, el('table', {},
+                    el('thead', {}, el('tr', {}, el('th', {}, 'Название'), el('th', {}, 'Вид'), el('th', {}, 'Ед.'), el('th', {}, 'Группа'), el('th', {}, 'Рецептура'))),
+                    el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 5, class: 'muted'}, 'Пусто'))))))));
 }
 
 // ---------- номенклатура: карточка ----------
 
 async function renderItem(view, id) {
-    const [item, recipe, all] = await Promise.all([
+    const [item, recipe, all, groups] = await Promise.all([
         api('GET', `items/${id}`),
         api('GET', `items/${id}/recipe`),
         api('GET', 'items?archived=1'),
+        api('GET', 'groups'),
     ]);
 
     const name = el('input', {value: item.name, size: 30});
     const kind = el('select', {}, options(KINDS, item.kind));
     const unit = el('select', {}, options(UNITS, item.unit));
     const archived = el('input', {type: 'checkbox', checked: item.archived});
+    const group = el('select', {}, groupOptions(groups, item.group_id, '— без группы —'));
 
     const save = async () => {
         if (await attempt(() => api('PUT', `items/${id}`, {
-            name: name.value, kind: kind.value, unit: unit.value, archived: archived.checked,
+            name: name.value, kind: kind.value, unit: unit.value, archived: archived.checked, group_id: selectValue(group),
         }), 'Сохранено')) {
             route();
         }
@@ -191,6 +321,7 @@ async function renderItem(view, id) {
             el('label', {}, 'Название', name),
             el('label', {}, 'Вид', kind),
             el('label', {}, 'Единица', unit),
+            el('label', {}, 'Группа', group),
             el('label', {class: 'check'}, archived, 'в архиве'),
             el('button', {class: 'primary', onclick: save}, 'Сохранить'),
             el('button', {class: 'danger', onclick: remove}, 'Удалить')),
@@ -574,8 +705,11 @@ async function renderDocs(view) {
 
 async function renderStock(view, params) {
     const date = params.get('date') || isoDate(new Date());
-    const balances = await api('GET', 'stock?date=' + date);
-    const go = d => { location.hash = '#/stock?date=' + d; };
+    const groupId = params.get('group') ? Number(params.get('group')) : null;
+    const groups = await api('GET', 'groups');
+    const balances = await api('GET', 'stock?date=' + date + (groupId ? '&group=' + groupId : ''));
+    const go = (d, g = groupId) => { location.hash = '#/stock?date=' + d + (g ? '&group=' + g : ''); };
+    const groupSelect = el('select', {onchange: e => go(date, selectValue(e.target))}, groupOptions(groups, groupId, 'все группы'));
     render(view,
         el('h2', {}, 'Остатки'),
         el('div', {class: 'toolbar'},
@@ -583,14 +717,16 @@ async function renderStock(view, params) {
             el('input', {type: 'date', value: date, onchange: e => e.target.value && go(e.target.value)}),
             el('button', {title: 'Следующий день', onclick: () => go(shiftDate(date, 1))}, '→'),
             el('span', {class: 'muted'}, 'на конец дня ' + humanDate(date))),
+        el('div', {class: 'toolbar'}, 'Группа', groupSelect),
         el('div', {class: 'table-wrap'}, el('table', {class: 'needs'},
-            el('thead', {}, el('tr', {}, el('th', {}, 'Продукция'), el('th', {class: 'num'}, 'Остаток'), el('th', {}, 'Ед.'))),
+            el('thead', {}, el('tr', {}, el('th', {}, 'Продукция'), el('th', {}, 'Группа'), el('th', {class: 'num'}, 'Остаток'), el('th', {}, 'Ед.'))),
             el('tbody', {}, balances.length
                 ? balances.map(b => el('tr', {class: b.archived ? 'archived' : null},
                     el('td', {}, b.name, b.archived ? el('span', {class: 'muted'}, ' (архив)') : null),
+                    el('td', {class: 'muted'}, b.group_id ? groupPath(groups, b.group_id) : ''),
                     el('td', {class: 'num'}, formatQty(b.qty)),
                     el('td', {}, UNITS[b.unit])))
-                : el('tr', {}, el('td', {colspan: 3, class: 'muted'}, 'Остатков нет'))))));
+                : el('tr', {}, el('td', {colspan: 4, class: 'muted'}, 'Остатков нет'))))));
 }
 
 // ---------- расчёт потребности ----------

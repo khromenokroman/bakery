@@ -7,6 +7,7 @@
 
 #include "catalog.hpp"
 #include "docs.hpp"
+#include "groups.hpp"
 #include "requirements.hpp"
 #include "stock.hpp"
 
@@ -45,3 +46,14 @@
 [[nodiscard]] Document document_from_json(nlohmann::json const &j);
 
 [[nodiscard]] nlohmann::json to_json(Balance const &balance);
+
+[[nodiscard]] nlohmann::json to_json(Group const &group);
+
+/// Группа из {"name", "parent_id": id | null}; parent_id необязателен.
+[[nodiscard]] Group group_from_json(nlohmann::json const &j);
+
+/**
+ * @brief Необязательный id: поля нет - base, null - пусто, число - значение.
+ * @throws UserError если значение не целое и не null
+ */
+[[nodiscard]] std::optional<std::int64_t> get_optional_id(nlohmann::json const &j, std::string_view key, std::optional<std::int64_t> base);

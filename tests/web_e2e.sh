@@ -16,6 +16,7 @@ export CHROME=${CHROME:-$(command -v chromium || command -v google-chrome || tru
 SCENARIOS=(
     "production_fill.js|#/docs/new?type=production&date=2026-10-12"
     "order_new.js|#/orders/new?date=2026-10-13"
+    "groups.js|#/items"
 )
 
 failed=0

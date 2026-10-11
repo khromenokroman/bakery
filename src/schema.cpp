@@ -7,7 +7,7 @@
 namespace {
 
 /// Миграции схемы. Применённую миграцию не менять: изменения только новой миграцией в конце.
-constexpr std::array<std::string_view, 1> MIGRATIONS = {
+constexpr std::array<std::string_view, 2> MIGRATIONS = {
     // 1: справочники, документы, движения склада
     R"sql(
 CREATE TABLE items (
@@ -84,6 +84,18 @@ CREATE TABLE stock_moves (
 );
 CREATE INDEX stock_moves_item ON stock_moves (item_id, date);
 CREATE INDEX stock_moves_doc ON stock_moves (doc_id);
+)sql",
+    // 2: группы номенклатуры (дерево)
+    R"sql(
+CREATE TABLE groups (
+    id        INTEGER PRIMARY KEY,
+    name      TEXT    NOT NULL,
+    parent_id INTEGER REFERENCES groups (id)
+);
+CREATE INDEX groups_parent ON groups (parent_id);
+
+ALTER TABLE items ADD COLUMN group_id INTEGER REFERENCES groups (id);
+CREATE INDEX items_group ON items (group_id);
 )sql",
 };
 

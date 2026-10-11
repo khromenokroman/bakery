@@ -28,6 +28,7 @@ add_library(${PROJECT_NAME}-core STATIC
         src/catalog.cpp
         src/db.cpp
         src/docs.cpp
+        src/groups.cpp
         src/json_io.cpp
         src/options.cpp
         src/requirements.cpp
@@ -53,6 +54,7 @@ if (BUILD_TESTS)
             tests/api_test.cpp
             tests/catalog_test.cpp
             tests/docs_test.cpp
+            tests/groups_test.cpp
             tests/options_test.cpp
             tests/requirements_test.cpp
             tests/schema_test.cpp
