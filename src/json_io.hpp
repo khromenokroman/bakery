@@ -66,3 +66,5 @@
 [[nodiscard]] nlohmann::json to_json(Partner const &partner);
 /// Поля клиента из запроса поверх base; отсутствующие остаются как в base.
 [[nodiscard]] Partner partner_from_json(nlohmann::json const &j, Partner base);
+
+[[nodiscard]] nlohmann::json to_json(Returnable const &r);

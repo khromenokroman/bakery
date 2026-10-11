@@ -142,6 +142,7 @@ nlohmann::json to_json(Document const &doc) {
         {"price_type_id", optional_json(doc.price_type_id)},
         {"partner_id", optional_json(doc.partner_id)},
         {"partner_name", doc.partner_name},
+        {"base_id", optional_json(doc.base_id)},
         {"lines", lines},
     };
 }
@@ -177,6 +178,7 @@ Document document_from_json(nlohmann::json const &j) {
     doc.date = get_string(j, "date");
     doc.price_type_id = get_optional_id(j, "price_type_id", std::nullopt);
     doc.partner_id = get_optional_id(j, "partner_id", std::nullopt);
+    doc.base_id = get_optional_id(j, "base_id", std::nullopt);
     if (j.contains("comment")) {
         doc.comment = get_string(j, "comment");
     }
@@ -263,4 +265,16 @@ Partner partner_from_json(nlohmann::json const &j, Partner base) {
         base.archived = *archived;
     }
     return base;
+}
+
+nlohmann::json to_json(Returnable const &r) {
+    return {
+        {"item_id", r.item_id},
+        {"name", r.name},
+        {"unit", to_string(r.unit)},
+        {"sold", r.sold},
+        {"returned", r.returned},
+        {"price_kop", optional_json(r.price_kop)},
+        {"cost_kop", optional_json(r.cost_kop)},
+    };
 }

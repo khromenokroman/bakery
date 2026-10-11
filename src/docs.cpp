@@ -4,6 +4,7 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <map>
 #include <set>
 #include <utility>
 
@@ -34,16 +35,18 @@ constexpr std::array<std::pair<DocType, std::string_view>, 7> TYPES = {{
 int move_sign(DocType type) {
     switch (type) {
         case DocType::PRODUCTION:
+        case DocType::RETURN:
             return 1;
         case DocType::SALE:
+        case DocType::WRITEOFF:
             return -1;
         default:
             return 0;
     }
 }
 
-bool has_price_type(DocType type) { return type == DocType::PRICES || type == DocType::SALE; }
-bool has_partner(DocType type) { return type == DocType::ORDER || type == DocType::SALE; }
+bool has_price_type(DocType type) { return type == DocType::PRICES || type == DocType::SALE || type == DocType::RETURN; }
+bool has_partner(DocType type) { return type == DocType::ORDER || type == DocType::SALE || type == DocType::RETURN; }
 
 /// Убирает из шапки поля, которых у вида документа нет.
 void normalize(Document &doc) {
@@ -53,6 +56,18 @@ void normalize(Document &doc) {
     if (!has_partner(doc.type)) {
         doc.partner_id.reset();
     }
+    if (doc.type != DocType::RETURN) {
+        doc.base_id.reset();
+    }
+}
+
+/// Сумма количества по позициям документа.
+std::map<std::int64_t, std::int64_t> qty_by_item(Document const &doc) {
+    std::map<std::int64_t, std::int64_t> out;
+    for (auto const &l : doc.lines) {
+        out[l.item_id] += l.qty;
+    }
+    return out;
 }
 
 /// "2026-10-12" -> "12.10.2026".
@@ -147,7 +162,7 @@ std::vector<Document> Documents::list(DocFilter const &filter) const {
 
 Document Documents::get(std::int64_t id) const {
     auto head = m_db.prepare(
-        "SELECT d.type, d.number, d.date, d.status, d.comment, d.price_type_id, d.partner_id, p.name FROM docs d "
+        "SELECT d.type, d.number, d.date, d.status, d.comment, d.price_type_id, d.partner_id, p.name, d.base_id FROM docs d "
         "LEFT JOIN partners p ON p.id = d.partner_id WHERE d.id = ?");
     head.bind(1, id);
     if (!head.step()) {
@@ -166,6 +181,9 @@ Document Documents::get(std::int64_t id) const {
     if (!head.column_is_null(6)) {
         doc.partner_id = head.column_int(6);
         doc.partner_name = head.column_text(7);
+    }
+    if (!head.column_is_null(8)) {
+        doc.base_id = head.column_int(8);
     }
 
     auto lines = m_db.prepare(
@@ -193,6 +211,11 @@ std::int64_t Documents::create(Document const &input) {
     auto doc = input;
     normalize(doc);
     Transaction tx{m_db};
+    if (doc.type == DocType::RETURN && doc.base_id) {
+        auto const sale = get(*doc.base_id);
+        doc.partner_id = sale.partner_id;
+        doc.price_type_id = sale.price_type_id;
+    }
     validate(doc, {});
     if (doc.partner_id) {
         auto const partner = Partners{m_db}.get(*doc.partner_id);
@@ -205,13 +228,16 @@ std::int64_t Documents::create(Document const &input) {
     next.step();
     auto const number = next.column_int(0);
 
-    auto ins = m_db.prepare("INSERT INTO docs (type, number, date, comment, price_type_id, partner_id) VALUES (?, ?, ?, ?, ?, ?)");
+    auto ins = m_db.prepare("INSERT INTO docs (type, number, date, comment, price_type_id, partner_id, base_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
     ins.bind(1, to_string(doc.type)).bind(2, number).bind(3, doc.date).bind(4, doc.comment);
     if (doc.price_type_id) {
         ins.bind(5, *doc.price_type_id);
     }
     if (doc.partner_id) {
         ins.bind(6, *doc.partner_id);
+    }
+    if (doc.base_id) {
+        ins.bind(7, *doc.base_id);
     }
     ins.step();
     auto const id = m_db.last_insert_id();
@@ -228,7 +254,13 @@ void Documents::update(Document const &doc) {
     auto const old_items = item_ids(old);
     auto checked = doc;
     checked.type = old.type;
+    checked.base_id = old.base_id;
     normalize(checked);
+    if (checked.type == DocType::RETURN && checked.base_id) {
+        auto const sale = get(*checked.base_id);
+        checked.partner_id = sale.partner_id;
+        checked.price_type_id = sale.price_type_id;
+    }
     validate(checked, old_items);
     if (checked.partner_id && checked.partner_id != old.partner_id) {
         auto const partner = Partners{m_db}.get(*checked.partner_id);
@@ -255,6 +287,9 @@ void Documents::update(Document const &doc) {
     del.step();
     write_lines(checked);
 
+    if (old.status == "posted" && old.type == DocType::SALE) {
+        check_sale_returns(doc.id, checked);
+    }
     if (old.status == "posted") {
         // перепроведение: старые движения заменяются новыми, минус проверяется только по итогу
         auto moves = m_db.prepare("DELETE FROM stock_moves WHERE doc_id = ?");
@@ -275,6 +310,11 @@ void Documents::remove(std::int64_t id) {
     Transaction tx{m_db};
     if (get(id).status != "draft") {
         throw UserError("документ проведён, удалить его нельзя");
+    }
+    auto based = m_db.prepare("SELECT group_concat(number, ', ') FROM docs WHERE base_id = ?");
+    based.bind(1, id);
+    if (based.step() && !based.column_is_null(0)) {
+        throw UserError("по документу оформлены возвраты № " + based.column_text(0) + ", сначала удалите их");
     }
     auto del = m_db.prepare("DELETE FROM docs WHERE id = ?");
     del.bind(1, id);
@@ -306,6 +346,9 @@ void Documents::unpost(std::int64_t id) {
     if (doc.status != "posted") {
         throw UserError("документ не проведён");
     }
+    if (doc.type == DocType::SALE) {
+        check_sale_returns(id, std::nullopt);
+    }
     auto del = m_db.prepare("DELETE FROM stock_moves WHERE doc_id = ?");
     del.bind(1, id);
     del.step();
@@ -317,11 +360,14 @@ void Documents::unpost(std::int64_t id) {
 }
 
 void Documents::validate(Document const &doc, std::vector<std::int64_t> const &old_items) const {
-    if (doc.type != DocType::ORDER && doc.type != DocType::PRODUCTION && doc.type != DocType::PRICES && doc.type != DocType::SALE) {
+    if (doc.type == DocType::INVENTORY) {
         throw UserError("документы вида " + std::string(to_string(doc.type)) + " пока не поддерживаются");
     }
+    if (doc.type == DocType::WRITEOFF && doc.comment.find_first_not_of(" \t\r\n") == std::string::npos) {
+        throw UserError("укажите причину списания");
+    }
     auto const prices = doc.type == DocType::PRICES;
-    if (has_price_type(doc.type)) {
+    if (has_price_type(doc.type) && doc.type != DocType::RETURN) {
         if (!doc.price_type_id) {
             throw UserError("не выбран тип цен");
         }
@@ -369,9 +415,16 @@ void Documents::validate(Document const &doc, std::vector<std::int64_t> const &o
             throw UserError(item.name + ": количество больше миллиона единиц");
         }
     }
+    if (doc.type == DocType::RETURN) {
+        check_return(doc);
+    }
 }
 
 void Documents::check_postable(Document const &doc) const {
+    if (doc.type == DocType::RETURN) {
+        check_return(doc);
+        return;
+    }
     if (doc.type != DocType::SALE) {
         return;
     }
@@ -387,6 +440,97 @@ void Documents::check_postable(Document const &doc) const {
     }
 }
 
+std::vector<Returnable> Documents::returnable(std::int64_t sale_id, std::optional<std::int64_t> exclude_return) const {
+    auto const sale = get(sale_id);
+    if (sale.type != DocType::SALE) {
+        throw UserError("документ № " + std::to_string(sale.number) + " не реализация");
+    }
+    auto returned = m_db.prepare(
+        "SELECT coalesce(sum(l.qty), 0) FROM doc_lines l JOIN docs d ON d.id = l.doc_id "
+        "WHERE d.base_id = ? AND d.type = 'return' AND d.status = 'posted' AND l.item_id = ? AND d.id <> ?");
+    std::vector<Returnable> out;
+    for (auto const &line : sale.lines) {
+        returned.reset();
+        returned.bind(1, sale_id).bind(2, line.item_id).bind(3, exclude_return.value_or(0));
+        returned.step();
+        Returnable r;
+        r.item_id = line.item_id;
+        r.name = line.name;
+        r.unit = line.unit;
+        r.sold = line.qty;
+        r.returned = returned.column_int(0);
+        r.price_kop = line.price_kop;
+        r.cost_kop = line.cost_kop;
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+void Documents::check_return(Document const &doc) const {
+    if (!doc.base_id) {
+        throw UserError("не указана реализация, по которой оформляется возврат");
+    }
+    auto const sale = get(*doc.base_id);
+    if (sale.type != DocType::SALE) {
+        throw UserError("основанием возврата может быть только реализация");
+    }
+    auto const sale_name = "реализация № " + std::to_string(sale.number) + " от " + ru_date(sale.date);
+    if (sale.status != "posted") {
+        throw UserError(sale_name + " не проведена");
+    }
+    if (doc.date < sale.date) {
+        throw UserError("возврат не может быть раньше реализации: " + sale_name);
+    }
+    std::map<std::int64_t, Returnable> available;
+    for (auto const &r : returnable(sale.id, doc.id ? std::optional{doc.id} : std::nullopt)) {
+        available.emplace(r.item_id, r);
+    }
+    for (auto const &[item, qty] : qty_by_item(doc)) {
+        auto const it = available.find(item);
+        if (it == available.end()) {
+            throw UserError("«" + Catalog{m_db}.get(item).name + "» не было в: " + sale_name);
+        }
+        auto const &r = it->second;
+        if (qty > r.sold - r.returned) {
+            throw UserError("«" + r.name + "»: можно вернуть не больше " + format_qty(r.sold - r.returned, r.unit) + " (продано " +
+                            format_qty(r.sold, r.unit) + ", уже возвращено " + format_qty(r.returned, r.unit) + ")");
+        }
+    }
+}
+
+void Documents::check_sale_returns(std::int64_t sale_id, std::optional<Document> const &sale) const {
+    auto stmt = m_db.prepare(
+        "SELECT l.item_id, sum(l.qty), group_concat(DISTINCT d.number) FROM doc_lines l JOIN docs d ON d.id = l.doc_id "
+        "WHERE d.base_id = ? AND d.type = 'return' AND d.status = 'posted' GROUP BY l.item_id");
+    stmt.bind(1, sale_id);
+    std::map<std::int64_t, std::int64_t> returned;
+    std::set<std::string> numbers;
+    while (stmt.step()) {
+        returned[stmt.column_int(0)] = stmt.column_int(1);
+        numbers.insert(stmt.column_text(2));
+    }
+    if (returned.empty()) {
+        return;
+    }
+    if (!sale) {
+        std::string list;
+        for (auto const &n : numbers) {
+            list += (list.empty() ? "" : ", ") + n;
+        }
+        throw UserError("по реализации проведены возвраты № " + list + ", сначала отмените их проведение");
+    }
+    auto const sold = qty_by_item(*sale);
+    for (auto const &[item, qty] : returned) {
+        auto const it = sold.find(item);
+        auto const left = it == sold.end() ? 0 : it->second;
+        if (left < qty) {
+            auto const i = Catalog{m_db}.get(item);
+            throw UserError("«" + i.name + "»: по возвратам возвращено " + format_qty(qty, i.unit) + ", а в реализации останется " +
+                            format_qty(left, i.unit));
+        }
+    }
+}
+
 void Documents::write_moves(Document const &doc) {
     auto const sign = move_sign(doc.type);
     auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (?, ?, ?, ?)");
@@ -399,12 +543,30 @@ void Documents::write_moves(Document const &doc) {
 
 void Documents::write_lines(Document const &doc) {
     Prices const prices{m_db};
+    std::map<std::int64_t, Returnable> from_sale;
+    if (doc.type == DocType::RETURN && doc.base_id) {
+        for (auto const &r : returnable(*doc.base_id)) {
+            from_sale.emplace(r.item_id, r);
+        }
+    }
     auto const with_price = has_price_type(doc.type);
     auto const with_cost = move_sign(doc.type) != 0;
     auto ins = m_db.prepare("INSERT INTO doc_lines (doc_id, item_id, qty, price_kop, cost_kop) VALUES (?, ?, ?, ?, ?)");
     for (auto const &line : doc.lines) {
         ins.reset();
         ins.bind(1, doc.id).bind(2, line.item_id).bind(3, doc.type == DocType::PRICES ? 0 : line.qty);
+        if (doc.type == DocType::RETURN) {
+            // возврат по ценам и себестоимости реализации
+            auto const &src = from_sale.at(line.item_id);
+            if (src.price_kop) {
+                ins.bind(4, *src.price_kop);
+            }
+            if (src.cost_kop) {
+                ins.bind(5, *src.cost_kop);
+            }
+            ins.step();
+            continue;
+        }
         if (with_price && line.price_kop) {
             ins.bind(4, *line.price_kop);
         } else if (doc.type == DocType::SALE && doc.price_type_id) {

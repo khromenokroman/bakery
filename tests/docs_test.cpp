@@ -49,8 +49,8 @@ TEST_F(DocsTest, Validation) {
     EXPECT_THROW_REASON(m_docs.create(make_order("2026-10-12", {{m_bread, 0}})), UserError, "Батон: количество должно быть больше нуля");
     EXPECT_THROW_REASON(m_docs.create(make_order("2026-10-12", {{999, 1000}})), NotFoundError, "id 999");
 
-    auto sale = make_order("2026-10-12", {{m_bread, 1000}}); // возврат появится в шаге 6
-    sale.type = DocType::RETURN;
+    auto sale = make_order("2026-10-12", {{m_bread, 1000}}); // инвентаризация появится в шаге 7
+    sale.type = DocType::INVENTORY;
     EXPECT_THROW_REASON(m_docs.create(sale), UserError, "пока не поддерживаются");
 
     auto item = m_catalog.get(m_pie);

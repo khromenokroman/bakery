@@ -48,9 +48,23 @@ struct Document {
     std::optional<std::int64_t> price_type_id; ///< тип цен: установка цен, реализация
     std::optional<std::int64_t> partner_id;    ///< клиент: заявка, реализация
     std::string partner_name;                  ///< только для чтения
+    std::optional<std::int64_t> base_id;       ///< основание: реализация для возврата
     std::int64_t id{};
     std::int64_t number{}; ///< только для чтения: присваивается при создании, сквозной в пределах вида
     DocType type = DocType::ORDER;
+};
+
+/**
+ * @brief Сколько по строке реализации можно вернуть.
+ */
+struct Returnable {
+    std::string name;
+    std::optional<std::int64_t> price_kop;
+    std::optional<std::int64_t> cost_kop;
+    std::int64_t item_id{};
+    std::int64_t sold{};     ///< продано, тысячные доли
+    std::int64_t returned{}; ///< возвращено проведёнными возвратами (кроме исключённого)
+    Unit unit = Unit::PCS;
 };
 
 /**
@@ -69,7 +83,8 @@ struct DocFilter {
 void check_date(std::string_view date);
 
 /**
- * @brief Документы: заявки (без движений), поступление из производства, реализация, установка цен.
+ * @brief Документы: заявки (без движений), поступление из производства, реализация, возврат по реализации,
+ * списание, установка цен.
  *
  * В строки складских документов при сохранении записывается себестоимость на дату документа
  * (тип цен «Себестоимость»); установка цен действует после проведения.
@@ -116,6 +131,13 @@ class Documents {
     void post(std::int64_t id);
 
     /**
+     * @brief Строки реализации с проданным и уже возвращённым количеством.
+     * @param exclude_return возврат, который не учитывать (редактируемый)
+     * @throws NotFoundError; UserError если документ не реализация
+     */
+    [[nodiscard]] std::vector<Returnable> returnable(std::int64_t sale_id, std::optional<std::int64_t> exclude_return = std::nullopt) const;
+
+    /**
      * @brief Отменяет проведение: удаляет движения документа.
      * @throws NotFoundError, UserError не проведён, остаток уйдёт в минус
      */
@@ -133,6 +155,20 @@ class Documents {
      * @throws UserError со списком строк без цены
      */
     void check_postable(Document const &doc) const;
+
+    /**
+     * @brief Возврат: основание - проведённая реализация не позже даты возврата, позиции из неё,
+     * количество не больше непроданного остатка по ней.
+     * @throws UserError
+     */
+    void check_return(Document const &doc) const;
+
+    /**
+     * @brief Реализацию нельзя отменить или уменьшить ниже возвращённого проведёнными возвратами.
+     * @param sale новая версия реализации или nullopt при отмене проведения
+     * @throws UserError
+     */
+    void check_sale_returns(std::int64_t sale_id, std::optional<Document> const &sale) const;
 
     /// Движения склада по строкам документа на его дату, со знаком его вида.
     void write_moves(Document const &doc);

@@ -61,6 +61,7 @@ if (BUILD_TESTS)
             tests/sales_test.cpp
             tests/prices_test.cpp
             tests/requirements_test.cpp
+            tests/returns_test.cpp
             tests/schema_test.cpp
             tests/stock_test.cpp
     )

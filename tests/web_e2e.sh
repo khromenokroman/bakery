@@ -19,6 +19,7 @@ SCENARIOS=(
     "groups.js|#/items"
     "prices.js|#/prices"
     "sale.js|#/docs"
+    "return_writeoff.js|#/docs"
 )
 
 failed=0

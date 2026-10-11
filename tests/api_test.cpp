@@ -461,3 +461,39 @@ TEST(ApiSales, SaleWithPartner) {
     EXPECT_EQ(CALL(srv, "GET", "/api/partners").body.size(), 0U);
     EXPECT_EQ(CALL(srv, "GET", "/api/partners?archived=1").body.size(), 1U);
 }
+
+/**
+ * @brief Возврат через API: что можно вернуть, создание с основанием, проведение, списание без причины.
+ */
+TEST(ApiReturns, ReturnableAndReturn) {
+    TestServer srv;
+    auto const v1 = CALL(srv, "POST", "/api/price-types", {{"name", "Вариант 1"}}).body.at("id");
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    auto id = CALL(srv, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-11"}, {"lines", {{{"item_id", bread}, {"qty", 40000}}}}})
+                  .body.at("id");
+    CALL(srv, "POST", "/api/docs/" + id.dump() + "/post");
+    auto const sale =
+        CALL(
+            srv, "POST", "/api/docs",
+            {{"type", "sale"}, {"date", "2026-10-12"}, {"price_type_id", v1}, {"lines", {{{"item_id", bread}, {"qty", 30000}, {"price_kop", 4500}}}}})
+            .body.at("id");
+    CALL(srv, "POST", "/api/docs/" + sale.dump() + "/post");
+
+    auto r = CALL(srv, "GET", "/api/docs/" + sale.dump() + "/returnable");
+    ASSERT_EQ(r.body.size(), 1U) << r.body;
+    EXPECT_EQ(r.body.at(0).at("sold"), 30000);
+    EXPECT_EQ(r.body.at(0).at("price_kop"), 4500);
+
+    r = CALL(srv, "POST", "/api/docs",
+             {{"type", "return"}, {"date", "2026-10-13"}, {"base_id", sale}, {"lines", {{{"item_id", bread}, {"qty", 5000}}}}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    EXPECT_EQ(r.body.at("base_id"), sale);
+    EXPECT_EQ(r.body.at("lines").at(0).at("price_kop"), 4500);
+    EXPECT_EQ(CALL(srv, "POST", "/api/docs/" + r.body.at("id").dump() + "/post").status, 200);
+    EXPECT_EQ(CALL(srv, "GET", "/api/docs/" + sale.dump() + "/returnable").body.at(0).at("returned"), 5000);
+    EXPECT_EQ(CALL(srv, "GET", "/api/docs/" + id.dump() + "/returnable").status, 400) << "поступление - не реализация";
+
+    r = CALL(srv, "POST", "/api/docs", {{"type", "writeoff"}, {"date", "2026-10-13"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}});
+    EXPECT_EQ(r.status, 400);
+    EXPECT_THAT(r.body.value("error", ""), HasSubstr("укажите причину списания"));
+}

@@ -226,6 +226,18 @@ void Api::register_docs(httplib::Server &server) {
                       send_json(res, nlohmann::json::object());
                   }));
 
+    server.Get("/api/docs/:id/returnable", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   std::optional<std::int64_t> exclude;
+                   if (req.has_param("exclude")) {
+                       exclude = query_id(req, "exclude");
+                   }
+                   auto out = nlohmann::json::array();
+                   for (auto const &r : m_docs.returnable(path_id(req), exclude)) {
+                       out.push_back(to_json(r));
+                   }
+                   send_json(res, out);
+               }));
+
     server.Post("/api/docs/:id/post", guarded([this](httplib::Request const &req, httplib::Response &res) {
                     auto const id = path_id(req);
                     m_docs.post(id);

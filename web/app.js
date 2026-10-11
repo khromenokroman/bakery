@@ -34,7 +34,7 @@ function el(tag, attrs, ...children) {
             node.setAttribute(key, value);
         }
     }
-    for (const child of children.flat()) {
+    for (const child of children.flat(Infinity)) {
         if (child !== null && child !== undefined && child !== false) {
             node.append(child instanceof Node ? child : String(child));
         }
@@ -47,7 +47,7 @@ function el(tag, attrs, ...children) {
  * replaceChildren сам вставил бы их текстом "null".
  */
 function render(view, ...children) {
-    view.replaceChildren(...children.flat().filter(c => c !== null && c !== undefined && c !== false));
+    view.replaceChildren(...children.flat(Infinity).filter(c => c !== null && c !== undefined && c !== false));
 }
 
 function options(map, selected) {
@@ -532,6 +532,16 @@ const DOC_TYPES = {
         back: () => '#/docs', backTitle: '← Документы', posting: true, fill: true, priceType: true, typedPrices: true,
         columns: {qty: true, price: true, cost: true},
     },
+    return: {
+        title: 'Возврат от покупателя', create: 'Новый возврат', comment: 'Комментарий',
+        back: () => '#/docs', backTitle: '← Документы', posting: true, fill: false, returnOf: true,
+        columns: {qty: true, remaining: true, price: true, cost: true},
+    },
+    writeoff: {
+        title: 'Списание', create: 'Новое списание', comment: 'Причина',
+        back: () => '#/docs', backTitle: '← Документы', posting: true, fill: false,
+        columns: {qty: true, cost: true},
+    },
     prices: {
         title: 'Установка цен', create: 'Новая установка цен', comment: 'Комментарий',
         back: () => '#/prices', backTitle: '← Цены', posting: true, fill: false, priceType: true,
@@ -568,7 +578,28 @@ async function renderDoc(view, id, params) {
     const byId = new Map(products.map(p => [p.id, p]));
     const date = doc ? doc.date : (params.get('date') || isoDate(new Date()));
 
-    const dateInput = el('input', {type: 'date', value: date});
+    // возврат: реализация-основание и сколько по ней можно вернуть (без учёта этого возврата)
+    const baseId = doc ? doc.base_id : (params.get('base') ? Number(params.get('base')) : null);
+    let base = null;
+    let returnable = new Map();
+    if (cfg.returnOf) {
+        if (!baseId) {
+            throw new Error('возврат оформляется из проведённой реализации: кнопка «Оформить возврат» в ней');
+        }
+        const [b, r] = await Promise.all([
+            api('GET', `docs/${baseId}`),
+            api('GET', `docs/${baseId}/returnable` + (doc ? `?exclude=${doc.id}` : '')),
+        ]);
+        base = b;
+        returnable = new Map(r.map(x => [x.item_id, x]));
+    }
+    // реализация: проведённые и черновые возвраты по ней
+    const returns = type === 'sale' && doc
+        ? (await api('GET', `docs?type=return&from=${doc.date}`)).filter(r => r.base_id === doc.id) : [];
+
+    // новый возврат - сегодня, но не раньше реализации
+    const today = isoDate(new Date());
+    const dateInput = el('input', {type: 'date', value: doc ? doc.date : (cfg.returnOf ? (today < base.date ? base.date : today) : date)});
     const comment = el('input', {value: doc ? doc.comment : '', size: 40});
     const chosenType = doc ? doc.price_type_id : (params.get('price_type') ? Number(params.get('price_type')) : null);
     const priceType = el('select', {},
@@ -644,10 +675,10 @@ async function renderDoc(view, id, params) {
             parts.push(el('span', {title: missingCost ? 'у части строк нет себестоимости' : ''},
                 'Себестоимость: ', el('strong', {}, formatMoney(costSum) + ' ₽' + (missingCost ? ' *' : ''))));
         }
-        if (cols.price && cols.qty && cols.cost && costSum > 0 && !missingCost) {
+        if (cfg.typedPrices && cols.cost && costSum > 0 && !missingCost) {
             const margin = sum - costSum;
             parts.push(el('span', {}, 'Наценка: ', el('strong', {}, `${formatMoney(margin)} ₽ (${Math.round(margin * 100 / costSum)}%)`)));
-        } else if (cols.price && cols.qty && cols.cost && missingCost) {
+        } else if (cfg.typedPrices && cols.cost && missingCost) {
             parts.push(el('span', {class: 'muted'}, 'наценка не считается: у части строк нет себестоимости'));
         }
         if (missingPrice) {
@@ -661,7 +692,11 @@ async function renderDoc(view, id, params) {
             candidates.map(p => el('option', {value: p.id, selected: line && p.id === line.item_id}, p.name + (p.archived ? ' (архив)' : ''))));
         const unitCell = el('td');
         const costCell = el('td', {class: 'num'});
-        const priceInput = el('input', {class: 'money', value: line && line.price_kop !== null && line.price_kop !== undefined ? formatMoney(line.price_kop) : '', oninput: update});
+        const priceInput = el('input', {class: 'money', value: line && line.price_kop !== null && line.price_kop !== undefined ? formatMoney(line.price_kop) : '', oninput: update, readonly: !!cfg.returnOf});
+        if (cfg.returnOf) {
+            select.disabled = true;
+        }
+        const left = line && returnable.get(line.item_id);
         const row = el('tr');
         const setCost = cost => {
             row.dataset.cost = cost === null || cost === undefined ? '' : cost;
@@ -683,6 +718,7 @@ async function renderDoc(view, id, params) {
         row.append(
             el('td', {}, select),
             cols.qty ? el('td', {class: 'num'}, el('input', {class: 'qty', value: line && line.qty ? formatQty(line.qty) : '', oninput: update})) : '',
+            cols.remaining ? el('td', {class: 'num muted'}, left ? formatQty(left.sold - left.returned) : '') : '',
             unitCell,
             cols.price ? el('td', {class: 'num'}, priceInput) : '',
             cols.price && cols.qty ? el('td', {class: 'num sum'}) : '',
@@ -693,8 +729,13 @@ async function renderDoc(view, id, params) {
         onItem(!!line && line.price_kop !== undefined);
         return row;
     };
-    (doc ? doc.lines : []).forEach(addRow);
-    if (!doc) {
+    if (doc) {
+        doc.lines.forEach(addRow);
+    } else if (cfg.returnOf) {
+        // новый возврат: всё, что ещё не возвращено, по ценам и себестоимости реализации
+        [...returnable.values()].filter(r => r.sold > r.returned).forEach(r =>
+            addRow({item_id: r.item_id, qty: r.sold - r.returned, price_kop: r.price_kop, cost_kop: r.cost_kop}));
+    } else {
         addRow(null);
     }
 
@@ -765,6 +806,9 @@ async function renderDoc(view, id, params) {
         }
         if (cfg.partner) {
             body.partner_id = selectValue(partner);
+        }
+        if (cfg.returnOf) {
+            body.base_id = baseId;
         }
         let saved;
         const ok = await attempt(async () => {
@@ -856,17 +900,24 @@ async function renderDoc(view, id, params) {
                 cfg.posting && !posted ? el('button', {class: 'primary', onclick: () => save(true)}, 'Сохранить и провести') : null,
                 posted ? el('button', {onclick: unpost}, 'Отменить проведение') : null,
                 cfg.fill ? el('button', {onclick: () => openFill(dateInput.value || date).catch(err => showMessage(err.message))}, 'Заполнить по заявкам') : null,
+                type === 'sale' && posted ? el('button', {onclick: () => { location.hash = `#/docs/new?type=return&base=${doc.id}`; }}, 'Оформить возврат') : null,
                 doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null)),
+        base ? el('p', {},
+            'По ', el('a', {href: '#/docs/' + base.id}, `реализации № ${base.number} от ${humanDate(base.date).split(',')[0]}`),
+            base.partner_name ? `, клиент ${base.partner_name}` : '') : null,
+        returns.length ? el('p', {}, 'Возвраты: ', returns.map((r, i) => [i ? ', ' : '',
+            el('a', {href: '#/docs/' + r.id}, `№ ${r.number}`), r.status === 'posted' ? '' : ' (не проведён)'])) : null,
         el('div', {class: 'fields'},
             el('label', {}, 'Дата', dateInput),
             cfg.partner ? el('label', {}, cfg.partner, partner) : null,
-            cfg.priceType ? el('label', {}, 'Тип цен', priceType) : null,
+            cfg.priceType && !cfg.returnOf ? el('label', {}, 'Тип цен', priceType) : null,
             el('label', {}, cfg.comment, comment)),
         fillPanel,
         el('div', {class: 'table-wrap', style: 'margin-top: 12px'}, el('table', {},
             el('thead', {}, el('tr', {},
                 el('th', {}, 'Продукция'),
-                cols.qty ? el('th', {class: 'num'}, 'Количество') : null,
+                cols.qty ? el('th', {class: 'num'}, cfg.returnOf ? 'Вернуть' : 'Количество') : null,
+                cols.remaining ? el('th', {class: 'num'}, 'Можно вернуть') : null,
                 el('th', {}, 'Ед.'),
                 cols.price ? el('th', {class: 'num'}, 'Цена, ₽') : null,
                 cols.price && cols.qty ? el('th', {class: 'num'}, 'Сумма, ₽') : null,
@@ -874,7 +925,7 @@ async function renderDoc(view, id, params) {
                 cols.cost ? el('th', {class: 'num'}, 'Сумма себест., ₽') : null,
                 el('th'))),
             tbody)),
-        el('div', {class: 'toolbar', style: 'margin-top: 8px'},
+        cfg.returnOf ? null : el('div', {class: 'toolbar', style: 'margin-top: 8px'},
             el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка')),
         totals);
     update();
@@ -888,7 +939,7 @@ async function renderDocs(view) {
     const today = isoDate(new Date());
     const from = docsState.from || shiftDate(today, -7);
     const to = docsState.to || today;
-    const docs = await api('GET', `docs?type=production,sale,prices&from=${from}&to=${to}`);
+    const docs = await api('GET', `docs?type=production,sale,return,writeoff,prices&from=${from}&to=${to}`);
     const fromInput = el('input', {type: 'date', value: from, onchange: e => { docsState.from = e.target.value; route(); }});
     const toInput = el('input', {type: 'date', value: to, onchange: e => { docsState.to = e.target.value; route(); }});
 
@@ -904,6 +955,7 @@ async function renderDocs(view) {
         el('div', {class: 'toolbar'},
             el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=production'; }}, 'Новое поступление'),
             el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=sale'; }}, 'Новая реализация'),
+            el('button', {onclick: () => { location.hash = '#/docs/new?type=writeoff'; }}, 'Новое списание'),
             el('button', {onclick: () => { location.hash = '#/docs/new?type=prices'; }}, 'Новая установка цен')),
         el('div', {class: 'toolbar'}, 'с', fromInput, 'по', toInput),
         el('div', {class: 'table-wrap'}, el('table', {},
