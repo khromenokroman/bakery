@@ -1,0 +1,7 @@
+.idea
+CLAUDE.md
+cmake-build-*
+build
+*.db
+*.db-wal
+*.db-shm
