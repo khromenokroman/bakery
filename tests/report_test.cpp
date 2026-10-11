@@ -3,10 +3,13 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "catalog.hpp"
+#include "docs.hpp"
 #include "errors.hpp"
 #include "fixture.hpp"
 #include "groups.hpp"
 #include "prices.hpp"
+#include "schema.hpp"
 #include "test_util.hpp"
 
 using testing::StrEq;
@@ -124,8 +127,9 @@ TEST_F(ReportTest, Group) {
  * @brief Вторая оценка по типу цен: каждое движение по цене на момент документа.
  *
  * «Розница»: батон 45,00 с 01.10, 50,00 с 13.10; торта нет. Начало (до 12.10): 40 × 45 = 1 800,00;
- * приход: возврат 13.10 5 × 50 = 250,00; расход: реализация 12.10 30 × 45 = 1 350,00, списание
- * 14.10 2 × 50 = 100,00; конец 1 800 + 250 - 1 450 = 600,00.
+ * приход: переоценка 13.10 остатка 10 шт × (50 - 45) = 50,00 и возврат 13.10 5 × 50 = 250,00;
+ * расход: реализация 12.10 30 × 45 = 1 350,00, списание 14.10 2 × 50 = 100,00;
+ * конец 1 800 + 300 - 1 450 = 650,00 = 13 шт × 50,00.
  */
 TEST_F(ReportTest, PriceTypeColumn) {
     Prices prices{m_db};
@@ -143,9 +147,9 @@ TEST_F(ReportTest, PriceTypeColumn) {
     }
     auto const r = goods_report(m_db, "2026-10-12", "2026-10-14", std::nullopt, retail);
     EXPECT_EQ(r.opening_price_sum, 180000);
-    EXPECT_EQ(r.in_price_sum, 25000);
+    EXPECT_EQ(r.in_price_sum, 30000) << "возврат 250,00 + переоценка 50,00";
     EXPECT_EQ(r.out_price_sum, 145000);
-    EXPECT_EQ(r.closing_price_sum, 60000);
+    EXPECT_EQ(r.closing_price_sum, 65000) << "13 шт × 50,00";
     ASSERT_EQ(r.outgoing.size(), 2U);
     EXPECT_EQ(r.outgoing[0].price_sum, 135000) << "реализация 12.10 по 45,00";
     EXPECT_EQ(r.outgoing[1].price_sum, 10000) << "списание 14.10 по 50,00";
@@ -160,8 +164,8 @@ TEST_F(ReportTest, PriceTypeColumn) {
 /**
  * @brief Остаток на начало по типу цен складывается из интервалов действия цен до периода.
  *
- * «Розница»: 45,00 с 01.10, 50,00 с 11.10. До периода 12.10: поступление 10.10 40 × 45 = 1 800,00 и
- * списание 11.10 1 × 50 = 50,00; начало = 1 750,00 (не 39 × текущую цену).
+ * «Розница»: 45,00 с 01.10, 50,00 с 11.10. До периода 12.10: поступление 10.10 40 × 45 = 1 800,00,
+ * переоценка 11.10 40 × 5 = 200,00, списание 11.10 1 × 50 = 50,00; начало = 1 950,00 = 39 × 50,00.
  */
 TEST_F(ReportTest, OpeningByPriceIntervals) {
     m_docs.post(m_docs.create(make_doc(DocType::WRITEOFF, "2026-10-11", {{m_bread, 1000}}, "брак")));
@@ -179,6 +183,109 @@ TEST_F(ReportTest, OpeningByPriceIntervals) {
         m_docs.post(m_docs.create(d));
     }
     auto const r = goods_report(m_db, "2026-10-12", "2026-10-14", std::nullopt, retail);
-    EXPECT_EQ(r.opening_price_sum, 175000);
+    EXPECT_EQ(r.opening_price_sum, 195000) << "39 шт × 50,00";
     EXPECT_EQ(r.closing_price_sum, r.opening_price_sum + r.in_price_sum - r.out_price_sum);
+}
+
+/**
+ * @brief Пример: 10 шт по себестоимости 10,00 на складе, технолог ставит 20,00, всё продано.
+ *
+ * Начало 100,00; приход: переоценка 10 × (20 - 10) = 100,00; расход: реализация 10 × 20 = 200,00;
+ * конец 0,00 при нуле штук. Затем снижение до 15,00 при пустом складе переоценки не даёт.
+ */
+TEST(Revaluation, CostChangeWithStock) {
+    Database db{":memory:"};
+    migrate(db);
+    Catalog catalog{db};
+    Documents docs{db};
+    Prices prices{db};
+    Item i;
+    i.name = "Батон";
+    i.kind = Kind::PRODUCT;
+    i.unit = Unit::PCS;
+    auto const bread = catalog.create(i);
+    auto const set_cost = [&](std::string const &date, std::int64_t price) {
+        Document d;
+        d.type = DocType::PRICES;
+        d.date = date;
+        d.time = "12:00";
+        d.price_type_id = COST_PRICE_TYPE;
+        DocLine l;
+        l.item_id = bread;
+        l.price_kop = price;
+        d.lines = {l};
+        auto const id = docs.create(d);
+        docs.post(id);
+        return id;
+    };
+    auto const doc = [&](DocType type, std::string const &date, std::int64_t qty) {
+        Document d;
+        d.type = type;
+        d.date = date;
+        d.time = "15:00";
+        d.price_type_id = type == DocType::SALE ? std::optional<std::int64_t>{prices.create_type("Опт " + date)} : std::nullopt;
+        DocLine l;
+        l.item_id = bread;
+        l.qty = qty;
+        l.price_kop = type == DocType::SALE ? std::optional<std::int64_t>{3000} : std::nullopt;
+        d.lines = {l};
+        docs.post(docs.create(d));
+    };
+    set_cost("2026-10-01", 1000);
+    doc(DocType::PRODUCTION, "2026-10-05", 10000);
+    auto const rise = set_cost("2026-10-12", 2000);
+    doc(DocType::SALE, "2026-10-13", 10000);
+    auto const fall = set_cost("2026-10-14", 1500);
+
+    auto const r = goods_report(db, "2026-10-10", "2026-10-15");
+    EXPECT_EQ(r.opening_sum, 10000) << "10 шт × 10,00";
+    ASSERT_EQ(r.incoming.size(), 1U);
+    EXPECT_EQ(r.incoming[0].type, DocType::PRICES);
+    EXPECT_EQ(r.incoming[0].id, rise);
+    EXPECT_EQ(r.incoming[0].sum, 10000) << "переоценка 10 × (20 - 10)";
+    ASSERT_EQ(r.outgoing.size(), 1U) << "снижение при пустом складе строки не даёт (документ " << fall << ")";
+    EXPECT_EQ(r.outgoing[0].sum, 20000) << "реализация 10 × 20,00";
+    EXPECT_EQ(r.closing_sum, 0) << "ноль штук - ноль рублей";
+}
+
+/**
+ * @brief Снижение цены при остатке - переоценка в расходе; первая цена у лежащего без цены товара -
+ * переоценка с нуля в приходе.
+ */
+TEST(Revaluation, DecreaseAndFirstPrice) {
+    Database db{":memory:"};
+    migrate(db);
+    Catalog catalog{db};
+    Documents docs{db};
+    Item i;
+    i.name = "Торт";
+    i.kind = Kind::PRODUCT;
+    i.unit = Unit::KG;
+    auto const cake = catalog.create(i);
+    Document prod;
+    prod.type = DocType::PRODUCTION;
+    prod.date = "2026-10-05";
+    DocLine pl;
+    pl.item_id = cake;
+    pl.qty = 4000;
+    prod.lines = {pl};
+    docs.post(docs.create(prod));
+    for (auto const &[date, price] : {std::pair{"2026-10-11", 40000}, std::pair{"2026-10-12", 35000}}) {
+        Document d;
+        d.type = DocType::PRICES;
+        d.date = date;
+        d.price_type_id = COST_PRICE_TYPE;
+        DocLine l;
+        l.item_id = cake;
+        l.price_kop = price;
+        d.lines = {l};
+        docs.post(docs.create(d));
+    }
+    auto const r = goods_report(db, "2026-10-10", "2026-10-12");
+    EXPECT_EQ(r.opening_sum, 0) << "торт пришёл без себестоимости";
+    ASSERT_EQ(r.incoming.size(), 1U);
+    EXPECT_EQ(r.incoming[0].sum, 160000) << "первая себестоимость: 4 кг × 400,00";
+    ASSERT_EQ(r.outgoing.size(), 1U);
+    EXPECT_EQ(r.outgoing[0].sum, 20000) << "снижение 4 кг × 50,00";
+    EXPECT_EQ(r.closing_sum, 140000) << "4 кг × 350,00";
 }

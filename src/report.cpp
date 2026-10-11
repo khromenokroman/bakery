@@ -1,9 +1,13 @@
 #include "report.hpp"
 
+#include <algorithm>
 #include <map>
+#include <set>
+#include <tuple>
 #include <utility>
 
 #include "errors.hpp"
+#include "prices.hpp"
 
 namespace {
 
@@ -78,6 +82,68 @@ std::pair<std::int64_t, std::int64_t> opening_by_price(Database &db, std::string
         }
     }
     return {value, without};
+}
+
+/// Переоценки по установкам цен: до начала периода - суммой, в периоде - по документам.
+struct Revaluation {
+    std::map<std::int64_t, std::pair<std::int64_t, std::int64_t>> by_doc; ///< документ -> {по себестоимости, по типу цен}
+    std::int64_t before_cost{};
+    std::int64_t before_price{};
+};
+
+/**
+ * @brief Переоценка остатка при каждой установке цен типа до конца периода.
+ *
+ * Для позиции установки: остаток до её момента (движения строго раньше; движения в тот же момент уже
+ * оценены по новой цене) × (новая цена - прежняя, 0 если цены не было). Количество накапливается по
+ * интервалам между установками, каждое движение читается один раз. Суммы - тысячные × копейки.
+ * @param price_column записать в колонку типа цен (иначе - себестоимости)
+ */
+void add_revaluations(Database &db, std::int64_t type, std::string const &begin, std::string const &end, std::optional<std::int64_t> group,
+                      bool price_column, Revaluation &out) {
+    std::set<std::int64_t> scope;
+    auto items = db.prepare(std::string("SELECT i.id FROM items i WHERE i.kind = 'product' AND ?1 IS NOT NULL AND ") + IN_GROUP);
+    items.bind(1, 1);
+    bind_group(items, group);
+    while (items.step()) {
+        scope.insert(items.column_int(0));
+    }
+    auto hist = db.prepare(
+        "SELECT l.item_id, d.date, d.id, l.price_kop FROM doc_lines l JOIN docs d ON d.id = l.doc_id "
+        "WHERE d.type = 'prices' AND d.status = 'posted' AND d.price_type_id = ?1 AND d.date <= ?2 ORDER BY l.item_id, d.date, d.id");
+    hist.bind(1, type).bind(2, end);
+    auto range = db.prepare("SELECT coalesce(sum(qty), 0) FROM stock_moves WHERE item_id = ?1 AND date >= ?2 AND date < ?3");
+
+    std::int64_t item = -1;
+    std::int64_t prev = 0;
+    std::int64_t qty = 0;
+    std::string last;
+    while (hist.step()) {
+        if (hist.column_int(0) != item) {
+            item = hist.column_int(0);
+            prev = 0;
+            qty = 0;
+            last.clear();
+        }
+        if (!scope.contains(item)) {
+            continue;
+        }
+        auto const when = hist.column_text(1);
+        range.reset();
+        range.bind(1, item).bind(2, last).bind(3, when);
+        range.step();
+        qty += range.column_int(0);
+        last = when;
+        auto const price = hist.column_int(3);
+        auto const amount = qty * (price - prev);
+        prev = price;
+        if (when < begin) {
+            (price_column ? out.before_price : out.before_cost) += amount;
+        } else {
+            auto &row = out.by_doc[hist.column_int(2)];
+            (price_column ? row.second : row.first) += amount;
+        }
+    }
 }
 
 } // namespace
@@ -179,6 +245,49 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
         }
     }
     // остаток на конец по арифметике отчёта, чтобы начало + приход - расход сходилось до копейки
+    // переоценки остатка при установке себестоимости и цен выбранного типа
+    Revaluation reval;
+    add_revaluations(db, COST_PRICE_TYPE, begin, end, group, false, reval);
+    if (price_type) {
+        add_revaluations(db, *price_type, begin, end, group, true, reval);
+    }
+    report.opening_sum += (reval.before_cost + 500) / 1000;
+    report.opening_price_sum += (reval.before_price + 500) / 1000;
+    auto head = db.prepare("SELECT number, date FROM docs WHERE id = ?");
+    for (auto const &[id, amounts] : reval.by_doc) {
+        auto const [cost, price] = amounts;
+        if (cost == 0 && price == 0) {
+            continue;
+        }
+        ReportDoc d;
+        d.id = id;
+        d.type = DocType::PRICES;
+        head.reset();
+        head.bind(1, id);
+        head.step();
+        d.number = head.column_int(0);
+        auto const when = head.column_text(1);
+        d.date = when.substr(0, 10);
+        d.time = when.substr(11);
+        // рост цены - приход, снижение - расход; знак по колонке, где переоценка есть
+        d.incoming = (cost != 0 ? cost : price) > 0;
+        auto const sign = d.incoming ? 1 : -1;
+        d.sum = (sign * cost + 500) / 1000;
+        d.price_sum = (sign * price + 500) / 1000;
+        if (d.incoming) {
+            report.in_sum += d.sum;
+            report.in_price_sum += d.price_sum;
+            report.incoming.push_back(std::move(d));
+        } else {
+            report.out_sum += d.sum;
+            report.out_price_sum += d.price_sum;
+            report.outgoing.push_back(std::move(d));
+        }
+    }
+    auto const chronological = [](ReportDoc const &a, ReportDoc const &b) { return std::tie(a.date, a.time, a.id) < std::tie(b.date, b.time, b.id); };
+    std::sort(report.incoming.begin(), report.incoming.end(), chronological);
+    std::sort(report.outgoing.begin(), report.outgoing.end(), chronological);
+
     report.closing_sum = report.opening_sum + report.in_sum - report.out_sum;
     report.closing_price_sum = report.opening_price_sum + report.in_price_sum - report.out_price_sum;
     return report;

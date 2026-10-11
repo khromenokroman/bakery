@@ -1,6 +1,7 @@
 // Товарный отчёт: себестоимость батона 31,20; 10.10 поступило 40, 12.10 продано 30, 13.10 списано 2.
 // Отчёт за 12-13.10: начало 1 248,00, расход 936,00 + 62,40, конец 249,60; кнопка из «Остатков»;
-// приложения по позициям нет; выбор типа цен «Опт» добавляет колонку (цен «Опт» нет - нули и предупреждение).
+// приложения по позициям нет; выбор типа цен «Опт» добавляет колонку (цен «Опт» нет - нули и предупреждение);
+// смена себестоимости при остатке даёт строку переоценки.
 const post = async (path, body) => {
     const res = await fetch('/api/' + path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
     const data = await res.json();
@@ -39,3 +40,12 @@ expect(withPrice.includes('Сумма по ценам «Опт», ₽'), 'нет
 expect(/Реализация\s+12\.10\.2026 00:00\s+1\s+936,00\s+0,00/.test(withPrice), 'строка реализации с колонкой «Опт»: ' + withPrice.slice(withPrice.indexOf('Реализация'), withPrice.indexOf('Реализация') + 60));
 expect(document.querySelector('.warnings') && document.querySelector('.warnings').textContent.includes('без цены «Опт»'), 'нет предупреждения о движениях без цены');
 log.push('колонка «Опт» добавлена, батона в «Опт» нет - предупреждение');
+
+// себестоимость 31,20 -> 35,00 13.10 в 06:00 при остатке 8 шт: переоценка 8 × 3,80 = 30,40, конец 8 × 35,00 = 280,00
+await post(`docs/${(await post('docs', {type: 'prices', date: '2026-10-13', time: '06:00', price_type_id: 1, lines: [{item_id: bread, price_kop: 3500}]})).id}/post`);
+location.hash = '#/report?from=2026-10-12&to=2026-10-13&r=1';
+await sleep(700);
+const reval = document.querySelector('.print-sheet').innerText.replace(/\u00a0/g, ' ');
+expect(/Переоценка \(установка цен\)\s+13\.10\.2026 06:00\s+\d+\s+30,40/.test(reval), 'нет строки переоценки 30,40:\n' + reval.slice(0, 700));
+expect(/Остаток на 13\.10\.2026\s+280,00/.test(reval), 'остаток на конец должен быть 8 × 35,00 = 280,00');
+log.push('переоценка 30,40, остаток 280,00 = 8 × 35,00');
