@@ -600,6 +600,11 @@ const DOC_TYPES = {
         back: () => '#/docs', backTitle: '← Документы', posting: true, fill: false,
         columns: {qty: true, cost: true},
     },
+    inventory: {
+        title: 'Инвентаризация', create: 'Новая инвентаризация', comment: 'Комментарий',
+        back: () => '#/docs', backTitle: '← Документы', posting: true, fill: false, inventory: true,
+        columns: {qty: true, book: true, cost: true},
+    },
     prices: {
         title: 'Установка цен', create: 'Новая установка цен', comment: 'Комментарий',
         back: () => '#/prices', backTitle: '← Цены', posting: true, fill: false, priceType: true,
@@ -618,11 +623,12 @@ function lineSum(qty, priceKop) {
  * сумма, себестоимость на дату документа и её сумма.
  */
 async function renderDoc(view, id, params) {
-    const [doc, products, priceTypes, partners] = await Promise.all([
+    const [doc, products, priceTypes, partners, groups] = await Promise.all([
         id ? api('GET', `docs/${id}`) : Promise.resolve(null),
         api('GET', 'items?kind=product&archived=1'),
         api('GET', 'price-types'),
         api('GET', 'partners?archived=1'),
+        api('GET', 'groups'),
     ]);
     const type = doc ? doc.type : (params.get('type') || 'order');
     const cfg = DOC_TYPES[type];
@@ -682,6 +688,22 @@ async function renderDoc(view, id, params) {
     const tbody = el('tbody');
     const totals = el('div', {class: 'totals'});
 
+    // инвентаризация: область (группа с подгруппами) и учётные остатки на момент документа без его движений
+    const scope = el('select', {}, groupOptions(groups, doc ? doc.group_id : null, 'вся продукция'));
+    let book = new Map();
+    const inScope = itemId => {
+        const g = selectValue(scope);
+        return !g || groupWithDescendants(groups, g).has((byId.get(itemId) || {}).group_id);
+    };
+    const loadBook = async () => {
+        if (!cfg.inventory || !dateInput.value) {
+            return;
+        }
+        const q = `stock?date=${dateInput.value}&time=${timeInput.value || '23:59'}` + (scope.value ? `&group=${scope.value}` : '') + (doc ? `&exclude=${doc.id}` : '');
+        book = new Map((await api('GET', q)).map(b => [b.item_id, b]));
+    };
+    const zeroed = el('div', {class: 'warnings', hidden: true});
+
     // себестоимость и типовые цены на дату документа; у сохранённых строк себестоимость своя (записана сервером)
     let costs = new Map();
     let typed = new Map();
@@ -698,6 +720,7 @@ async function renderDoc(view, id, params) {
         }
     };
     await loadPrices();
+    await loadBook();
 
     const numberOrNull = text => (text === '' || text === undefined ? null : Number(text));
 
@@ -736,6 +759,26 @@ async function renderDoc(view, id, params) {
                 row.querySelector('td.cost-sum').textContent = lineCost === null ? '' : formatMoney(lineCost);
                 costSum += lineCost || 0;
             }
+        }
+        if (cfg.inventory) {
+            const listed = new Set();
+            for (const row of tbody.children) {
+                const itemId = Number(row.querySelector('select').value);
+                listed.add(itemId);
+                const fact = parseQty(row.querySelector('input.qty').value);
+                const b = book.get(itemId);
+                const bookQty = b ? b.qty : 0;
+                row.querySelector('td.book').textContent = itemId ? formatQty(bookQty) : '';
+                const diffCell = row.querySelector('td.diff');
+                const diff = itemId && fact !== null ? fact - bookQty : null;
+                diffCell.textContent = diff === null || diff === 0 ? '' : (diff > 0 ? '+' : '') + formatQty(diff);
+                diffCell.className = 'num diff ' + (diff > 0 ? 'plus' : diff < 0 ? 'minus' : '');
+            }
+            const lost = [...book.values()].filter(b => !listed.has(b.item_id));
+            zeroed.hidden = !lost.length;
+            zeroed.textContent = lost.length
+                ? 'При проведении будут обнулены (нет в документе): ' + lost.map(b => `${b.name} ${formatQty(b.qty)} ${UNITS[b.unit]}`).join(', ')
+                : '';
         }
         const parts = [];
         if (cols.price && cols.qty) {
@@ -785,10 +828,18 @@ async function renderDoc(view, id, params) {
             update();
         };
         select.addEventListener('change', () => onItem(false));
+        if (cfg.inventory) {
+            // в выбор - только позиции области
+            for (const option of [...select.options].slice(1)) {
+                option.hidden = !inScope(Number(option.value));
+            }
+        }
         row.append(
             el('td', {}, select),
             cols.qty ? el('td', {class: 'num'}, el('input', {class: 'qty', value: line && line.qty ? formatQty(line.qty) : '', oninput: update})) : '',
             cols.remaining ? el('td', {class: 'num muted'}, left ? formatQty(left.sold - left.returned) : '') : '',
+            cols.book ? el('td', {class: 'num muted book'}) : '',
+            cols.book ? el('td', {class: 'num diff'}) : '',
             unitCell,
             cols.price ? el('td', {class: 'num'}, priceInput) : '',
             cols.price && cols.qty ? el('td', {class: 'num sum'}) : '',
@@ -812,6 +863,7 @@ async function renderDoc(view, id, params) {
     /** После смены даты или типа цен: новая себестоимость, по желанию - цены нового типа во всех строках. */
     const reprice = async () => {
         await loadPrices();
+        await loadBook();
         const refill = cfg.typedPrices && tbody.querySelector('select') && confirm('Подставить цены на эту дату и этого типа во все строки? Поправленные вручную цены будут заменены.');
         for (const row of tbody.children) {
             const itemId = Number(row.querySelector('select').value);
@@ -831,6 +883,30 @@ async function renderDoc(view, id, params) {
     dateInput.addEventListener('change', () => dateInput.value && reprice().catch(err => showMessage(err.message)));
     timeInput.addEventListener('change', () => timeInput.value && reprice().catch(err => showMessage(err.message)));
     priceType.addEventListener('change', () => reprice().catch(err => showMessage(err.message)));
+    scope.addEventListener('change', () => {
+        for (const row of tbody.children) {
+            for (const option of [...row.querySelector('select').options].slice(1)) {
+                option.hidden = !inScope(Number(option.value));
+            }
+        }
+        loadBook().then(update).catch(err => showMessage(err.message));
+    });
+
+    /** Строки по учётным остаткам области: факт = учёт, дальше правится насчитанное. */
+    const fillBook = async () => {
+        const filled = [...tbody.children].some(r => r.querySelector('select').value);
+        if (filled && !confirm('Заменить строки учётными остатками?')) {
+            return;
+        }
+        await loadBook();
+        tbody.replaceChildren();
+        [...book.values()].forEach(b => addRow({item_id: b.item_id, qty: b.qty}));
+        if (!book.size) {
+            addRow(null);
+        }
+        update();
+        showMessage(`Заполнено учётными остатками: ${book.size}. Исправьте факт там, где насчитали иначе`, 'ok');
+    };
 
     /** Строки из таблицы; null и сообщение, если что-то не так. */
     const collect = () => {
@@ -883,6 +959,9 @@ async function renderDoc(view, id, params) {
         }
         if (cfg.returnOf) {
             body.base_id = baseId;
+        }
+        if (cfg.inventory) {
+            body.group_id = selectValue(scope);
         }
         let saved;
         const ok = await attempt(async () => {
@@ -975,6 +1054,7 @@ async function renderDoc(view, id, params) {
                 posted ? el('button', {onclick: unpost}, 'Отменить проведение') : null,
                 cfg.fill ? el('button', {onclick: () => openFill(dateInput.value || date).catch(err => showMessage(err.message))}, 'Заполнить по заявкам') : null,
                 type === 'sale' && posted ? el('button', {onclick: () => { location.hash = `#/docs/new?type=return&base=${doc.id}`; }}, 'Оформить возврат') : null,
+                cfg.inventory ? el('button', {onclick: () => fillBook().catch(err => showMessage(err.message))}, 'Заполнить учётными остатками') : null,
                 doc ? el('button', {onclick: () => window.open(`#/print/${doc.id}`, '_blank')}, 'Печать') : null,
                 doc && type === 'sale' ? el('button', {onclick: () => window.open(`#/print/${doc.id}?form=torg12`, '_blank')}, 'ТОРГ-12') : null,
                 doc && type === 'sale' ? el('button', {onclick: () => window.open(`#/print/${doc.id}?form=upd`, '_blank')}, 'УПД') : null,
@@ -989,13 +1069,17 @@ async function renderDoc(view, id, params) {
             cfg.time === false ? null : el('label', {}, 'Время', timeInput),
             cfg.partner ? el('label', {}, cfg.partner, partner) : null,
             cfg.priceType && !cfg.returnOf ? el('label', {}, 'Тип цен', priceType) : null,
+            cfg.inventory ? el('label', {}, 'Область', scope) : null,
             el('label', {}, cfg.comment, comment)),
         fillPanel,
+        cfg.inventory ? zeroed : null,
         el('div', {class: 'table-wrap', style: 'margin-top: 12px'}, el('table', {},
             el('thead', {}, el('tr', {},
                 el('th', {}, 'Продукция'),
-                cols.qty ? el('th', {class: 'num'}, cfg.returnOf ? 'Вернуть' : 'Количество') : null,
+                cols.qty ? el('th', {class: 'num'}, cfg.returnOf ? 'Вернуть' : cfg.inventory ? 'Факт' : 'Количество') : null,
                 cols.remaining ? el('th', {class: 'num'}, 'Можно вернуть') : null,
+                cols.book ? el('th', {class: 'num'}, 'Учёт') : null,
+                cols.book ? el('th', {class: 'num'}, 'Разница') : null,
                 el('th', {}, 'Ед.'),
                 cols.price ? el('th', {class: 'num'}, 'Цена, ₽') : null,
                 cols.price && cols.qty ? el('th', {class: 'num'}, 'Сумма, ₽') : null,
@@ -1016,7 +1100,7 @@ async function renderDocs(view, params) {
     const today = isoDate(new Date());
     const from = params.get('from') || shiftDate(today, -7);
     const to = params.get('to') || shiftDate(today, 7);
-    const docs = await api('GET', `docs?type=production,sale,return,writeoff,prices&from=${from}&to=${to}`);
+    const docs = await api('GET', `docs?type=production,sale,return,writeoff,inventory,prices&from=${from}&to=${to}`);
     const go = (f, t) => { location.hash = `#/docs?from=${f}&to=${t}`; };
     const fromInput = el('input', {type: 'date', value: from, onchange: e => e.target.value && go(e.target.value, to)});
     const toInput = el('input', {type: 'date', value: to, onchange: e => e.target.value && go(from, e.target.value)});
@@ -1034,6 +1118,7 @@ async function renderDocs(view, params) {
             el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=production'; }}, 'Новое поступление'),
             el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=sale'; }}, 'Новая реализация'),
             el('button', {onclick: () => { location.hash = '#/docs/new?type=writeoff'; }}, 'Новое списание'),
+            el('button', {onclick: () => { location.hash = '#/docs/new?type=inventory'; }}, 'Новая инвентаризация'),
             el('button', {onclick: () => { location.hash = '#/docs/new?type=prices'; }}, 'Новая установка цен')),
         el('div', {class: 'toolbar'}, 'с', fromInput, 'по', toInput),
         el('div', {class: 'table-wrap'}, el('table', {},
@@ -1214,6 +1299,7 @@ const DOC_SIGNATURES = {
     sale: [['Отпустил', 'storekeeper'], ['Получил', '']],
     return: [['Сдал (покупатель)', ''], ['Принял', 'storekeeper']],
     writeoff: [['Списал', 'storekeeper'], ['Утвердил (руководитель)', 'director']],
+    inventory: [['Председатель комиссии', 'director'], ['Члены комиссии', ''], ['Материально ответственное лицо', 'storekeeper']],
     prices: [['Утвердил (руководитель)', 'director']],
 };
 

@@ -149,6 +149,7 @@ nlohmann::json to_json(Document const &doc) {
         {"partner_id", optional_json(doc.partner_id)},
         {"partner_name", doc.partner_name},
         {"base_id", optional_json(doc.base_id)},
+        {"group_id", optional_json(doc.group_id)},
         {"lines", lines},
     };
 }
@@ -188,6 +189,7 @@ Document document_from_json(nlohmann::json const &j) {
     doc.price_type_id = get_optional_id(j, "price_type_id", std::nullopt);
     doc.partner_id = get_optional_id(j, "partner_id", std::nullopt);
     doc.base_id = get_optional_id(j, "base_id", std::nullopt);
+    doc.group_id = get_optional_id(j, "group_id", std::nullopt);
     if (j.contains("comment")) {
         doc.comment = get_string(j, "comment");
     }

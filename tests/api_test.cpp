@@ -563,3 +563,36 @@ TEST(ApiReport, Goods) {
     EXPECT_EQ(CALL(srv, "GET", "/api/report/goods?from=2026-10-12&to=2026-10-10").status, 400);
     EXPECT_EQ(CALL(srv, "GET", "/api/report/goods?from=x&to=2026-10-10").status, 400);
 }
+
+/**
+ * @brief Инвентаризация через API: учётные остатки на момент без документа, область, проведение.
+ */
+TEST(ApiInventory, FillAndPost) {
+    TestServer srv;
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    auto const cake = CALL(srv, "POST", "/api/items", {{"name", "Торт"}, {"kind", "product"}, {"unit", "kg"}}).body.at("id");
+    auto id = CALL(srv, "POST", "/api/docs",
+                   {{"type", "production"},
+                    {"date", "2026-10-10"},
+                    {"time", "08:00"},
+                    {"lines", {{{"item_id", bread}, {"qty", 10000}}, {{"item_id", cake}, {"qty", 5000}}}}})
+                  .body.at("id");
+    CALL(srv, "POST", "/api/docs/" + id.dump() + "/post");
+
+    auto r = CALL(srv, "GET", "/api/stock?date=2026-10-10&time=07:00");
+    EXPECT_TRUE(r.body.empty()) << "до поступления в 08:00: " << r.body;
+    r = CALL(srv, "GET", "/api/stock?date=2026-10-10&time=09:00");
+    EXPECT_EQ(r.body.size(), 2U) << r.body;
+
+    r = CALL(srv, "POST", "/api/docs",
+             {{"type", "inventory"}, {"date", "2026-10-10"}, {"time", "20:00"}, {"lines", {{{"item_id", bread}, {"qty", 9000}}}}});
+    ASSERT_EQ(r.status, 201) << r.body;
+    auto const inv = r.body.at("id").dump();
+    EXPECT_TRUE(r.body.at("group_id").is_null());
+    EXPECT_EQ(CALL(srv, "POST", "/api/docs/" + inv + "/post").status, 200);
+    r = CALL(srv, "GET", "/api/stock");
+    ASSERT_EQ(r.body.size(), 1U) << "торт обнулён: " << r.body;
+    EXPECT_EQ(r.body.at(0).at("qty"), 9000);
+    r = CALL(srv, "GET", "/api/stock?date=2026-10-10&time=21:00&exclude=" + inv);
+    EXPECT_EQ(r.body.size(), 2U) << "учёт без движений инвентаризации: " << r.body;
+}

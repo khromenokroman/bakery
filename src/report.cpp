@@ -61,12 +61,12 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
     }
 
     // документы периода с суммой по себестоимости
-    auto docs = db.prepare(std::string("SELECT d.id, d.type, d.number, d.date, coalesce(p.name, ''), sum(m.qty * coalesce(l.cost_kop, 0))"
+    auto docs = db.prepare(std::string("SELECT d.id, d.type, d.number, d.date, coalesce(p.name, ''), sum(m.qty * coalesce(l.cost_kop, 0)), m.qty > 0"
                                        " FROM stock_moves m JOIN docs d ON d.id = m.doc_id JOIN items i ON i.id = m.item_id"
                                        " JOIN doc_lines l ON l.doc_id = m.doc_id AND l.item_id = m.item_id"
                                        " LEFT JOIN partners p ON p.id = d.partner_id"
                                        " WHERE m.date >= ?1 AND m.date <= ?2 AND ") +
-                           IN_GROUP + " GROUP BY d.id ORDER BY d.date, d.id");
+                           IN_GROUP + " GROUP BY d.id, m.qty > 0 ORDER BY d.date, d.id");
     docs.bind(1, begin).bind(2, end);
     bind_group(docs, group);
     while (docs.step()) {
@@ -79,7 +79,9 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
         d.time = when.size() > 11 ? when.substr(11) : "00:00:00";
         d.partner_name = docs.column_text(4);
         auto const value = docs.column_int(5);
-        d.incoming = value >= 0 && (d.type == DocType::PRODUCTION || d.type == DocType::RETURN);
+        // приход - положительные движения (поступление, возврат, излишки инвентаризации) по знаку количества:
+        // сумма бывает нулевой, если себестоимости нет
+        d.incoming = docs.column_int(6) != 0;
         d.sum = ((d.incoming ? value : -value) + 500) / 1000;
         if (d.incoming) {
             report.in_sum += d.sum;

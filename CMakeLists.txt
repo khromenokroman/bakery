@@ -59,6 +59,7 @@ if (BUILD_TESTS)
             tests/catalog_test.cpp
             tests/docs_test.cpp
             tests/groups_test.cpp
+            tests/inventory_test.cpp
             tests/options_test.cpp
             tests/sales_test.cpp
             tests/prices_test.cpp

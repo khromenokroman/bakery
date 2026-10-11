@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "errors.hpp"
+#include "groups.hpp"
 #include "partners.hpp"
 #include "prices.hpp"
 #include "stock.hpp"
@@ -59,6 +60,9 @@ void normalize(Document &doc) {
     if (doc.type != DocType::RETURN) {
         doc.base_id.reset();
     }
+    if (doc.type != DocType::INVENTORY) {
+        doc.group_id.reset();
+    }
 }
 
 /// Сумма количества по позициям документа.
@@ -74,7 +78,10 @@ std::map<std::int64_t, std::int64_t> qty_by_item(Document const &doc) {
 std::string ru_date(std::string const &iso) { return iso.size() == 10 ? iso.substr(8, 2) + "." + iso.substr(5, 2) + "." + iso.substr(0, 4) : iso; }
 
 /// Виды, которые проводятся: со складскими движениями или установка цен.
-bool postable(DocType type) { return move_sign(type) != 0 || type == DocType::PRICES; }
+bool postable(DocType type) { return move_sign(type) != 0 || type == DocType::PRICES || type == DocType::INVENTORY; }
+
+/// Склад меняется: вид с постоянным знаком движения или инвентаризация.
+bool moves_stock(DocType type) { return move_sign(type) != 0 || type == DocType::INVENTORY; }
 
 std::vector<std::int64_t> item_ids(Document const &doc) {
     std::vector<std::int64_t> ids;
@@ -186,7 +193,7 @@ std::vector<Document> Documents::list(DocFilter const &filter) const {
 
 Document Documents::get(std::int64_t id) const {
     auto head = m_db.prepare(
-        "SELECT d.type, d.number, d.date, d.status, d.comment, d.price_type_id, d.partner_id, p.name, d.base_id FROM docs d "
+        "SELECT d.type, d.number, d.date, d.status, d.comment, d.price_type_id, d.partner_id, p.name, d.base_id, d.group_id FROM docs d "
         "LEFT JOIN partners p ON p.id = d.partner_id WHERE d.id = ?");
     head.bind(1, id);
     if (!head.step()) {
@@ -210,6 +217,9 @@ Document Documents::get(std::int64_t id) const {
     }
     if (!head.column_is_null(8)) {
         doc.base_id = head.column_int(8);
+    }
+    if (!head.column_is_null(9)) {
+        doc.group_id = head.column_int(9);
     }
 
     auto lines = m_db.prepare(
@@ -255,7 +265,8 @@ std::int64_t Documents::create(Document const &input) {
     next.step();
     auto const number = next.column_int(0);
 
-    auto ins = m_db.prepare("INSERT INTO docs (type, number, date, comment, price_type_id, partner_id, base_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    auto ins =
+        m_db.prepare("INSERT INTO docs (type, number, date, comment, price_type_id, partner_id, base_id, group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
     ins.bind(1, to_string(doc.type)).bind(2, number).bind(3, moment(doc)).bind(4, doc.comment);
     if (doc.price_type_id) {
         ins.bind(5, *doc.price_type_id);
@@ -265,6 +276,9 @@ std::int64_t Documents::create(Document const &input) {
     }
     if (doc.base_id) {
         ins.bind(7, *doc.base_id);
+    }
+    if (doc.group_id) {
+        ins.bind(8, *doc.group_id);
     }
     ins.step();
     auto const id = m_db.last_insert_id();
@@ -297,8 +311,13 @@ void Documents::update(Document const &doc) {
         }
     }
 
-    auto upd = m_db.prepare("UPDATE docs SET date = ?, comment = ?, price_type_id = ?, partner_id = ? WHERE id = ?");
-    upd.bind(1, moment(checked)).bind(2, doc.comment).bind(5, doc.id);
+    auto upd = m_db.prepare("UPDATE docs SET date = ?, comment = ?, price_type_id = ?, partner_id = ?, group_id = ? WHERE id = ?");
+    upd.bind(1, moment(checked)).bind(2, doc.comment).bind(6, doc.id);
+    if (checked.group_id) {
+        upd.bind(5, *checked.group_id);
+    } else {
+        upd.bind_null(5);
+    }
     if (checked.price_type_id) {
         upd.bind(3, *checked.price_type_id);
     } else {
@@ -320,14 +339,15 @@ void Documents::update(Document const &doc) {
     }
     if (old.status == "posted") {
         // перепроведение: старые движения заменяются новыми, минус проверяется только по итогу
+        auto const old_moved = moved_items(doc.id);
         auto moves = m_db.prepare("DELETE FROM stock_moves WHERE doc_id = ?");
         moves.bind(1, doc.id);
         moves.step();
         auto const fresh_doc = get(doc.id);
         check_postable(fresh_doc);
         write_moves(fresh_doc);
-        auto items = old_items;
-        auto const fresh = item_ids(checked);
+        auto items = old_moved;
+        auto const fresh = moved_items(doc.id);
         items.insert(items.end(), fresh.begin(), fresh.end());
         Stock{m_db}.check_non_negative(items);
     }
@@ -364,7 +384,7 @@ void Documents::post(std::int64_t id) {
     auto upd = m_db.prepare("UPDATE docs SET status = 'posted' WHERE id = ?");
     upd.bind(1, id);
     upd.step();
-    Stock{m_db}.check_non_negative(item_ids(doc));
+    Stock{m_db}.check_non_negative(moved_items(id));
     tx.commit();
 }
 
@@ -377,19 +397,21 @@ void Documents::unpost(std::int64_t id) {
     if (doc.type == DocType::SALE) {
         check_sale_returns(id, std::nullopt);
     }
+    auto const moved = moved_items(id);
     auto del = m_db.prepare("DELETE FROM stock_moves WHERE doc_id = ?");
     del.bind(1, id);
     del.step();
     auto upd = m_db.prepare("UPDATE docs SET status = 'draft' WHERE id = ?");
     upd.bind(1, id);
     upd.step();
-    Stock{m_db}.check_non_negative(item_ids(doc));
+    Stock{m_db}.check_non_negative(moved);
     tx.commit();
 }
 
 void Documents::validate(Document const &doc, std::vector<std::int64_t> const &old_items) const {
-    if (doc.type == DocType::INVENTORY) {
-        throw UserError("документы вида " + std::string(to_string(doc.type)) + " пока не поддерживаются");
+    std::optional<std::set<std::int64_t>> scope;
+    if (doc.type == DocType::INVENTORY && doc.group_id) {
+        scope = Groups{m_db}.with_descendants(*doc.group_id);
     }
     if (doc.type == DocType::WRITEOFF && doc.comment.find_first_not_of(" \t\r\n") == std::string::npos) {
         throw UserError("укажите причину списания");
@@ -436,8 +458,12 @@ void Documents::validate(Document const &doc, std::vector<std::int64_t> const &o
         if (line.price_kop && (*line.price_kop < 0 || *line.price_kop > MAX_PRICE)) {
             throw UserError(item.name + ": цена должна быть от 0 до 100 000 000 рублей");
         }
-        if (line.qty <= 0) {
-            throw UserError(item.name + ": количество должно быть больше нуля");
+        if (scope && (!item.group_id || !scope->contains(*item.group_id))) {
+            throw UserError("«" + item.name + "» не входит в группу инвентаризации «" + Groups{m_db}.path(*doc.group_id) + "»");
+        }
+        if (doc.type == DocType::INVENTORY ? line.qty < 0 : line.qty <= 0) {
+            throw UserError(item.name +
+                            (doc.type == DocType::INVENTORY ? ": количество не может быть отрицательным" : ": количество должно быть больше нуля"));
         }
         if (line.qty > MAX_QTY) {
             throw UserError(item.name + ": количество больше миллиона единиц");
@@ -562,6 +588,25 @@ void Documents::check_sale_returns(std::int64_t sale_id, std::optional<Document>
 
 void Documents::write_moves(Document const &doc) {
     auto const sign = move_sign(doc.type);
+    if (doc.type == DocType::INVENTORY) {
+        // факт по строкам, учёт на момент документа без его движений; позиции области вне документа - в ноль
+        std::map<std::int64_t, std::int64_t> diff;
+        for (auto const &b : Stock{m_db}.balances(moment(doc), doc.group_id, doc.id)) {
+            diff[b.item_id] -= b.qty;
+        }
+        for (auto const &line : doc.lines) {
+            diff[line.item_id] += line.qty;
+        }
+        auto ins = m_db.prepare("INSERT INTO stock_moves (doc_id, item_id, qty, date) VALUES (?, ?, ?, ?)");
+        for (auto const &[item, qty] : diff) {
+            if (qty != 0) {
+                ins.reset();
+                ins.bind(1, doc.id).bind(2, item).bind(3, qty).bind(4, moment(doc));
+                ins.step();
+            }
+        }
+        return;
+    }
     if (sign == 0) {
         // установка цен проводится без складских движений
         return;
@@ -574,6 +619,16 @@ void Documents::write_moves(Document const &doc) {
     }
 }
 
+std::vector<std::int64_t> Documents::moved_items(std::int64_t doc_id) const {
+    auto stmt = m_db.prepare("SELECT DISTINCT item_id FROM stock_moves WHERE doc_id = ?");
+    stmt.bind(1, doc_id);
+    std::vector<std::int64_t> out;
+    while (stmt.step()) {
+        out.push_back(stmt.column_int(0));
+    }
+    return out;
+}
+
 void Documents::write_lines(Document const &doc) {
     Prices const prices{m_db};
     std::map<std::int64_t, Returnable> from_sale;
@@ -583,7 +638,7 @@ void Documents::write_lines(Document const &doc) {
         }
     }
     auto const with_price = has_price_type(doc.type);
-    auto const with_cost = move_sign(doc.type) != 0;
+    auto const with_cost = moves_stock(doc.type);
     auto ins = m_db.prepare("INSERT INTO doc_lines (doc_id, item_id, qty, price_kop, cost_kop) VALUES (?, ?, ?, ?, ?)");
     for (auto const &line : doc.lines) {
         ins.reset();

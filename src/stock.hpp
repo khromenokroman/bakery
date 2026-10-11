@@ -34,10 +34,13 @@ class Stock {
     explicit Stock(Database &db);
 
     /**
-     * @brief Ненулевые остатки на конец дня date (все движения, если nullopt), по названию.
+     * @brief Ненулевые остатки по названию.
+     * @param date "ГГГГ-ММ-ДД" - на конец дня, "ГГГГ-ММ-ДД ЧЧ:ММ:СС" - на момент включительно, nullopt - все движения
      * @param group только позиции группы и её подгрупп
+     * @param exclude_doc не учитывать движения этого документа (учётный остаток для инвентаризации)
      */
-    [[nodiscard]] std::vector<Balance> balances(std::optional<std::string> const &date, std::optional<std::int64_t> group = std::nullopt) const;
+    [[nodiscard]] std::vector<Balance> balances(std::optional<std::string> const &date, std::optional<std::int64_t> group = std::nullopt,
+                                                std::optional<std::int64_t> exclude_doc = std::nullopt) const;
 
     /**
      * @brief Проверяет, что остаток каждой позиции из items не меньше нуля на конец любого дня.

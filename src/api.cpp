@@ -274,6 +274,13 @@ void Api::register_docs(httplib::Server &server) {
                    if (req.has_param("date")) {
                        check_date(req.get_param_value("date"));
                        date = req.get_param_value("date");
+                       if (req.has_param("time")) {
+                           *date += " " + normalize_time(req.get_param_value("time"));
+                       }
+                   }
+                   std::optional<std::int64_t> exclude;
+                   if (req.has_param("exclude")) {
+                       exclude = query_id(req, "exclude");
                    }
                    auto out = nlohmann::json::array();
                    std::optional<std::int64_t> group;
@@ -281,7 +288,7 @@ void Api::register_docs(httplib::Server &server) {
                        group = query_id(req, "group");
                        (void)m_groups.get(*group);
                    }
-                   for (auto const &b : m_stock.balances(date, group)) {
+                   for (auto const &b : m_stock.balances(date, group, exclude)) {
                        out.push_back(to_json(b));
                    }
                    send_json(res, out);

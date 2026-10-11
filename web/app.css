@@ -207,6 +207,14 @@ input.money.missing {
     margin-top: 12px;
 }
 
+td.diff.plus {
+    color: var(--ok-fg);
+}
+
+td.diff.minus {
+    color: var(--error-fg);
+}
+
 .error-text {
     color: var(--error-fg);
 }

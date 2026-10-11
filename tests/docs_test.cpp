@@ -37,7 +37,7 @@ TEST_F(DocsTest, CreateAndNumbering) {
 }
 
 /**
- * @brief Проверки заявки: дата, пустые строки, повтор, не продукция, архив, количество, вид документа.
+ * @brief Проверки заявки: дата, пустые строки, повтор, не продукция, архив, количество.
  */
 TEST_F(DocsTest, Validation) {
     auto const dough = add("Тесто", Kind::SEMI);
@@ -48,10 +48,6 @@ TEST_F(DocsTest, Validation) {
     EXPECT_THROW_REASON(m_docs.create(make_order("2026-10-12", {{dough, 1000}})), UserError, "«Тесто» не продукция");
     EXPECT_THROW_REASON(m_docs.create(make_order("2026-10-12", {{m_bread, 0}})), UserError, "Батон: количество должно быть больше нуля");
     EXPECT_THROW_REASON(m_docs.create(make_order("2026-10-12", {{999, 1000}})), NotFoundError, "id 999");
-
-    auto sale = make_order("2026-10-12", {{m_bread, 1000}}); // инвентаризация появится в шаге 7
-    sale.type = DocType::INVENTORY;
-    EXPECT_THROW_REASON(m_docs.create(sale), UserError, "пока не поддерживаются");
 
     auto item = m_catalog.get(m_pie);
     item.archived = true;

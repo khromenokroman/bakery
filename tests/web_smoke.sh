@@ -52,6 +52,7 @@ SALE2=$(call POST docs "{\"type\":\"sale\",\"date\":\"2026-10-12\",\"price_type_
 call POST "docs/$SALE2/post" '' >/dev/null
 RET=$(call POST docs "{\"type\":\"return\",\"date\":\"2026-10-13\",\"base_id\":$SALE2,\"lines\":[{\"item_id\":$BREAD,\"qty\":1000}]}" | id)
 WO=$(call POST docs "{\"type\":\"writeoff\",\"date\":\"2026-10-13\",\"comment\":\"брак\",\"lines\":[{\"item_id\":$BREAD,\"qty\":1000}]}" | id)
+INV=$(call POST docs "{\"type\":\"inventory\",\"date\":\"2026-10-14\",\"time\":\"20:00\",\"group_id\":$CAKES,\"lines\":[{\"item_id\":$COOKIE,\"qty\":200}]}" | id)
 O2=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"comment\":\"Магазин\",\"lines\":[{\"item_id\":$COOKIE,\"qty\":1500}]}" | id)
 
 PAGES=(
@@ -96,6 +97,9 @@ PAGES=(
     "print/$SALE2?form=upd"
     "report?from=2026-10-01&to=2026-10-31"
     "report?from=2026-10-12&to=2026-10-12&group=$PASTRY"
+    "docs/$INV"
+    "docs/new?type=inventory"
+    "print/$INV"
 )
 
 failed=0

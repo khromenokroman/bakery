@@ -22,6 +22,7 @@ SCENARIOS=(
     "return_writeoff.js|#/docs"
     "settings_print.js|#/docs"
     "report.js|#/docs"
+    "inventory.js|#/docs"
 )
 
 failed=0
