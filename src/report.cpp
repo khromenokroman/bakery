@@ -22,6 +22,9 @@ constexpr char const PRICE_AT_MOVE[] =
     "AND pd.status = 'posted' AND pd.price_type_id = ?4 AND pl.item_id = m.item_id AND pd.date <= m.date "
     "ORDER BY pd.date DESC, pd.id DESC LIMIT 1)";
 
+/// Тысячные доли копейки -> копейки, половина от нуля: деление в C++ отбрасывает дробь к нулю.
+std::int64_t to_kop(std::int64_t milli) { return (milli >= 0 ? milli + 500 : milli - 500) / 1000; }
+
 void bind_group(Statement &stmt, std::optional<std::int64_t> group) {
     if (group) {
         stmt.bind(3, *group);
@@ -87,7 +90,7 @@ std::pair<std::int64_t, std::int64_t> opening_by_price(Database &db, std::string
 /// Переоценки по установкам цен: до начала периода - суммой, в периоде - по документам.
 struct Revaluation {
     std::map<std::int64_t, std::pair<std::int64_t, std::int64_t>> by_doc; ///< документ -> {по себестоимости, по типу цен}
-    std::int64_t before_cost{};
+    std::map<std::int64_t, std::pair<std::int64_t, std::int64_t>> by_item; ///< позиция -> {до периода, до конца} по себестоимости
     std::int64_t before_price{};
 };
 
@@ -137,8 +140,17 @@ void add_revaluations(Database &db, std::int64_t type, std::string const &begin,
         auto const price = hist.column_int(3);
         auto const amount = qty * (price - prev);
         prev = price;
+        if (!price_column) {
+            auto &sums = out.by_item[item];
+            sums.second += amount;
+            if (when < begin) {
+                sums.first += amount;
+            }
+        }
         if (when < begin) {
-            (price_column ? out.before_price : out.before_cost) += amount;
+            if (price_column) {
+                out.before_price += amount;
+            }
         } else {
             auto &row = out.by_doc[hist.column_int(2)];
             (price_column ? row.second : row.first) += amount;
@@ -158,6 +170,13 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
     auto const begin = from + " 00:00:00";
     auto const end = to + " 23:59:59";
     GoodsReport report;
+
+    // переоценки остатка при установке себестоимости и цен выбранного типа
+    Revaluation reval;
+    add_revaluations(db, COST_PRICE_TYPE, begin, end, group, false, reval);
+    if (price_type) {
+        add_revaluations(db, *price_type, begin, end, group, true, reval);
+    }
 
     // по позициям: количество и стоимость до начала, приход и расход за период, стоимость на конец
     auto items = db.prepare(std::string("SELECT i.id, i.name, i.unit,"
@@ -181,9 +200,12 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
         r.in = items.column_int(4);
         r.out = items.column_int(5);
         r.closing = r.opening + r.in - r.out;
-        // произведение количества (тысячные) на цену (копейки) делится на 1000 с округлением
-        r.opening_sum = (items.column_int(6) + 500) / 1000;
-        r.closing_sum = (items.column_int(7) + 500) / 1000;
+        // произведение количества (тысячные) на цену (копейки) делится на 1000 с округлением;
+        // стоимость остатка включает переоценки, иначе не равна количеству × себестоимости
+        auto const item_reval = reval.by_item.find(r.item_id);
+        auto const [reval_before, reval_total] = item_reval == reval.by_item.end() ? std::pair<std::int64_t, std::int64_t>{} : item_reval->second;
+        r.opening_sum = to_kop(items.column_int(6) + reval_before);
+        r.closing_sum = to_kop(items.column_int(7) + reval_total);
         report.lines_without_cost += items.column_int(8);
         if (r.opening != 0 || r.in != 0 || r.out != 0) {
             report.opening_sum += r.opening_sum;
@@ -196,7 +218,7 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
     report.price_type_id = price_type;
     if (price_type) {
         auto const [value, without] = opening_by_price(db, begin, group, *price_type);
-        report.opening_price_sum = (value + 500) / 1000;
+        report.opening_price_sum = to_kop(value + reval.before_price);
         report.moves_without_price = without;
     }
 
@@ -228,9 +250,9 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
         // приход - положительные движения (поступление, возврат, излишки инвентаризации) по знаку количества:
         // сумма бывает нулевой, если себестоимости нет
         d.incoming = docs.column_int(6) != 0;
-        d.sum = ((d.incoming ? value : -value) + 500) / 1000;
+        d.sum = to_kop(d.incoming ? value : -value);
         auto const price_value = docs.column_int(7);
-        d.price_sum = ((d.incoming ? price_value : -price_value) + 500) / 1000;
+        d.price_sum = to_kop(d.incoming ? price_value : -price_value);
         if (price_type) {
             report.moves_without_price += docs.column_int(8);
         }
@@ -245,14 +267,6 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
         }
     }
     // остаток на конец по арифметике отчёта, чтобы начало + приход - расход сходилось до копейки
-    // переоценки остатка при установке себестоимости и цен выбранного типа
-    Revaluation reval;
-    add_revaluations(db, COST_PRICE_TYPE, begin, end, group, false, reval);
-    if (price_type) {
-        add_revaluations(db, *price_type, begin, end, group, true, reval);
-    }
-    report.opening_sum += (reval.before_cost + 500) / 1000;
-    report.opening_price_sum += (reval.before_price + 500) / 1000;
     auto head = db.prepare("SELECT number, date FROM docs WHERE id = ?");
     for (auto const &[id, amounts] : reval.by_doc) {
         auto const [cost, price] = amounts;
@@ -272,8 +286,8 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
         // рост цены - приход, снижение - расход; знак по колонке, где переоценка есть
         d.incoming = (cost != 0 ? cost : price) > 0;
         auto const sign = d.incoming ? 1 : -1;
-        d.sum = (sign * cost + 500) / 1000;
-        d.price_sum = (sign * price + 500) / 1000;
+        d.sum = to_kop(sign * cost);
+        d.price_sum = to_kop(sign * price);
         if (d.incoming) {
             report.in_sum += d.sum;
             report.in_price_sum += d.price_sum;
