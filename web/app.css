@@ -698,3 +698,10 @@ table.f-grid {
 .ok-text {
     color: var(--ok-fg);
 }
+
+input:disabled,
+select:disabled,
+button:disabled {
+    opacity: 0.6;
+    cursor: default;
+}

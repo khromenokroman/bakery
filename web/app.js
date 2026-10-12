@@ -630,12 +630,13 @@ function lineSum(qty, priceKop) {
  * сумма, себестоимость на дату документа и её сумма.
  */
 async function renderDoc(view, id, params) {
-    const [doc, products, priceTypes, partners, groups] = await Promise.all([
+    const [doc, products, priceTypes, partners, groups, period] = await Promise.all([
         id ? api('GET', `docs/${id}`) : Promise.resolve(null),
         api('GET', 'items?kind=product&archived=1'),
         api('GET', 'price-types'),
         api('GET', 'partners?archived=1'),
         api('GET', 'groups'),
+        api('GET', 'period'),
     ]);
     const type = doc ? doc.type : (params.get('type') || 'order');
     const cfg = DOC_TYPES[type];
@@ -644,6 +645,9 @@ async function renderDoc(view, id, params) {
     }
     const cols = cfg.columns;
     const posted = doc && doc.status === 'posted';
+    // документ в закрытом периоде только для просмотра и печати
+    const locked = Boolean(doc && period.closed_till && doc.date <= period.closed_till);
+    const editable = !locked;
     const inDoc = new Set((doc ? doc.lines : []).map(l => l.item_id));
     const candidates = products.filter(p => !p.archived || inDoc.has(p.id));
     const byId = new Map(products.map(p => [p.id, p]));
@@ -1054,18 +1058,20 @@ async function renderDoc(view, id, params) {
         el('div', {class: 'actions'},
             el('h2', {}, title, cfg.posting && doc ? el('span', {class: 'status ' + doc.status}, posted ? 'проведён' : 'не проведён') : null),
             el('div', {class: 'toolbar'},
-                posted
+                !editable ? null : posted
                     ? el('button', {class: 'primary', onclick: () => save(false)}, 'Сохранить и перепровести')
                     : el('button', {class: cfg.posting ? null : 'primary', onclick: () => save(false)}, 'Сохранить'),
-                cfg.posting && !posted ? el('button', {class: 'primary', onclick: () => save(true)}, 'Сохранить и провести') : null,
-                posted ? el('button', {onclick: unpost}, 'Отменить проведение') : null,
-                cfg.fill ? el('button', {onclick: () => openFill(dateInput.value || date).catch(err => showMessage(err.message))}, 'Заполнить по заявкам') : null,
+                editable && cfg.posting && !posted ? el('button', {class: 'primary', onclick: () => save(true)}, 'Сохранить и провести') : null,
+                editable && posted ? el('button', {onclick: unpost}, 'Отменить проведение') : null,
+                editable && cfg.fill ? el('button', {onclick: () => openFill(dateInput.value || date).catch(err => showMessage(err.message))}, 'Заполнить по заявкам') : null,
                 type === 'sale' && posted ? el('button', {onclick: () => { location.hash = `#/docs/new?type=return&base=${doc.id}`; }}, 'Оформить возврат') : null,
-                cfg.inventory ? el('button', {onclick: () => fillBook().catch(err => showMessage(err.message))}, 'Заполнить учётными остатками') : null,
+                editable && cfg.inventory ? el('button', {onclick: () => fillBook().catch(err => showMessage(err.message))}, 'Заполнить учётными остатками') : null,
                 doc ? el('button', {onclick: () => window.open(`#/print/${doc.id}`, '_blank')}, 'Печать') : null,
                 doc && type === 'sale' ? el('button', {onclick: () => window.open(`#/print/${doc.id}?form=torg12`, '_blank')}, 'ТОРГ-12') : null,
                 doc && type === 'sale' ? el('button', {onclick: () => window.open(`#/print/${doc.id}?form=upd`, '_blank')}, 'УПД') : null,
-                doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null)),
+                editable && doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null)),
+        locked ? el('p', {class: 'warnings'}, `Период по ${humanDate(period.closed_till).split(',')[0]} закрыт: документ только для просмотра. `,
+            el('a', {href: '#/settings'}, 'Закрытие периода')) : null,
         base ? el('p', {},
             'По ', el('a', {href: '#/docs/' + base.id}, `реализации № ${base.number} от ${humanDate(base.date).split(',')[0]}`),
             base.partner_name ? `, клиент ${base.partner_name}` : '') : null,
@@ -1094,10 +1100,13 @@ async function renderDoc(view, id, params) {
                 cols.cost ? el('th', {class: 'num'}, 'Сумма себест., ₽') : null,
                 el('th'))),
             tbody)),
-        cfg.returnOf ? null : el('div', {class: 'toolbar', style: 'margin-top: 8px'},
+        cfg.returnOf || locked ? null : el('div', {class: 'toolbar', style: 'margin-top: 8px'},
             el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка')),
         totals);
     update();
+    if (locked) {
+        view.querySelectorAll('.fields input, .fields select, tbody input, tbody select, tbody button').forEach(e => { e.disabled = true; });
+    }
 }
 
 // ---------- документы ----------
@@ -1283,7 +1292,7 @@ const SETTINGS_FORM = [
 ];
 
 async function renderSettings(view) {
-    const settings = await api('GET', 'settings');
+    const [settings, period] = await Promise.all([api('GET', 'settings'), api('GET', 'period')]);
     const inputs = {};
     const vat = el('input', {type: 'checkbox', checked: settings.vat_payer === '1'});
     const footer = el('input', {value: settings.doc_footer, size: 80});
@@ -1308,7 +1317,38 @@ async function renderSettings(view) {
         el('h3', {}, 'НДС'),
         el('label', {class: 'check'}, vat, 'организация - плательщик НДС (ставка указывается в карточке продукции, цены включают НДС)'),
         el('h3', {}, 'Текст внизу печатных документов'),
-        el('div', {class: 'fields'}, el('label', {}, 'Например, условия возврата или контакты', footer)));
+        el('div', {class: 'fields'}, el('label', {}, 'Например, условия возврата или контакты', footer)),
+        periodSection(period));
+}
+
+/**
+ * Закрытие периода: документы по дату включительно нельзя создавать, менять, проводить и отменять.
+ * Сдвиг даты назад открывает период и требует подтверждения.
+ */
+function periodSection(period) {
+    const till = period.closed_till;
+    const ru = d => humanDate(d).split(',')[0];
+    const input = el('input', {type: 'date', value: till || ''});
+    const apply = async next => {
+        if (till && (!next || next < till)) {
+            const from = next ? ru(shiftDate(next, 1)) : 'начала учёта';
+            if (!confirm(`Открыть период с ${from} по ${ru(till)}? Документы в нём снова можно будет менять, после правок может понадобиться перепроведение.`)) {
+                return;
+            }
+        }
+        if (await attempt(() => api('PUT', 'period', {closed_till: next}), next ? `Период закрыт по ${ru(next)}` : 'Все периоды открыты')) {
+            route();
+        }
+    };
+    return [
+        el('h3', {}, 'Закрытие периода'),
+        el('p', {class: 'muted'}, 'Документы по выбранную дату включительно нельзя создавать, изменять, удалять, проводить и отменять: '
+            + 'случайная правка задним числом не потребует перепроведения. Закрыть период нельзя, пока документы в нём ждут перепроведения.'),
+        el('p', {}, till ? el('strong', {}, `Закрыт по ${ru(till)}`) : 'Период не закрыт'),
+        el('div', {class: 'toolbar'}, 'Закрыть по', input,
+            el('button', {class: 'primary', onclick: () => input.value ? apply(input.value) : showMessage('Укажите дату')}, 'Закрыть период'),
+            till ? el('button', {onclick: () => apply(null)}, 'Открыть все периоды') : null),
+    ];
 }
 
 // ---------- печать ----------

@@ -54,6 +54,11 @@ RET=$(call POST docs "{\"type\":\"return\",\"date\":\"2026-10-13\",\"base_id\":$
 WO=$(call POST docs "{\"type\":\"writeoff\",\"date\":\"2026-10-13\",\"comment\":\"брак\",\"lines\":[{\"item_id\":$BREAD,\"qty\":1000}]}" | id)
 INV=$(call POST docs "{\"type\":\"inventory\",\"date\":\"2026-10-14\",\"time\":\"20:00\",\"group_id\":$CAKES,\"lines\":[{\"item_id\":$COOKIE,\"qty\":200}]}" | id)
 O2=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"comment\":\"Магазин\",\"lines\":[{\"item_id\":$COOKIE,\"qty\":1500}]}" | id)
+# закрытый период: заявка и установка цен 01.10 только для просмотра
+OLD=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-01\",\"lines\":[{\"item_id\":$BREAD,\"qty\":1000}]}" | id)
+PR0=$(call POST docs "{\"type\":\"prices\",\"date\":\"2026-10-01\",\"price_type_id\":$V1,\"lines\":[{\"item_id\":$BREAD,\"price_kop\":4000}]}" | id)
+call POST "docs/$PR0/post" '' >/dev/null
+call PUT period '{"closed_till":"2026-10-05"}' >/dev/null
 
 PAGES=(
     "items"
@@ -103,6 +108,8 @@ PAGES=(
     "print/$INV"
     "repost"
     "repost?date=2026-10-12&time=08:00"
+    "orders/$OLD"
+    "docs/$PR0"
 )
 
 failed=0
