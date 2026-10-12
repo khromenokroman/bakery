@@ -57,6 +57,7 @@ if (BUILD_TESTS)
     add_executable(${PROJECT_NAME}-tests
             tests/api_test.cpp
             tests/catalog_test.cpp
+            tests/cycle_test.cpp
             tests/docs_test.cpp
             tests/groups_test.cpp
             tests/inventory_test.cpp
