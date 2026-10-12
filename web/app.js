@@ -578,6 +578,9 @@ async function renderOrders(view, params) {
 }
 
 /** Настройки карточки по виду документа. */
+// последний открытый список документов с датами и видами: туда ведёт «← Документы»
+let docsListHash = '#/docs';
+
 const DOC_TYPES = {
     order: {
         title: 'Заявка', create: 'Новая заявка', comment: 'Комментарий', partner: 'От кого',
@@ -586,27 +589,27 @@ const DOC_TYPES = {
     },
     production: {
         title: 'Поступление из производства', create: 'Новое поступление', comment: 'Комментарий',
-        back: () => '#/docs', backTitle: '← Документы', posting: true, fill: true,
+        back: () => docsListHash, backTitle: '← Документы', posting: true, fill: true,
         columns: {qty: true, cost: true},
     },
     sale: {
         title: 'Реализация', create: 'Новая реализация', comment: 'Комментарий', partner: 'Клиент',
-        back: () => '#/docs', backTitle: '← Документы', posting: true, fill: true, priceType: true, typedPrices: true,
+        back: () => docsListHash, backTitle: '← Документы', posting: true, fill: true, priceType: true, typedPrices: true,
         columns: {qty: true, price: true, cost: true},
     },
     return: {
         title: 'Возврат от покупателя', create: 'Новый возврат', comment: 'Комментарий',
-        back: () => '#/docs', backTitle: '← Документы', posting: true, fill: false, returnOf: true,
+        back: () => docsListHash, backTitle: '← Документы', posting: true, fill: false, returnOf: true,
         columns: {qty: true, remaining: true, price: true, cost: true},
     },
     writeoff: {
         title: 'Списание', create: 'Новое списание', comment: 'Причина',
-        back: () => '#/docs', backTitle: '← Документы', posting: true, fill: false,
+        back: () => docsListHash, backTitle: '← Документы', posting: true, fill: false,
         columns: {qty: true, cost: true},
     },
     inventory: {
         title: 'Инвентаризация', create: 'Новая инвентаризация', comment: 'Комментарий',
-        back: () => '#/docs', backTitle: '← Документы', posting: true, fill: false, inventory: true,
+        back: () => docsListHash, backTitle: '← Документы', posting: true, fill: false, inventory: true,
         columns: {qty: true, book: true, cost: true},
     },
     prices: {
@@ -1099,15 +1102,26 @@ async function renderDoc(view, id, params) {
 
 // ---------- документы ----------
 
+// виды в списке документов, порядок кнопок фильтра; заявки живут в своём разделе
+const DOC_FILTER = {production: 'Поступление', sale: 'Реализация', return: 'Возврат', writeoff: 'Списание', inventory: 'Инвентаризация', prices: 'Установка цен'};
+const LIST_DOC_TYPES = Object.keys(DOC_FILTER);
+
 async function renderDocs(view, params) {
     // по умолчанию неделя до и после сегодня: документы, оформленные заранее, тоже видны
     const today = isoDate(new Date());
     const from = params.get('from') || shiftDate(today, -7);
     const to = params.get('to') || shiftDate(today, 7);
-    const docs = await api('GET', `docs?type=production,sale,return,writeoff,inventory,prices&from=${from}&to=${to}`);
-    const go = (f, t) => { location.hash = `#/docs?from=${f}&to=${t}`; };
-    const fromInput = el('input', {type: 'date', value: from, onchange: e => e.target.value && go(e.target.value, to)});
-    const toInput = el('input', {type: 'date', value: to, onchange: e => e.target.value && go(from, e.target.value)});
+    // выбранные виды; ни одного - все виды
+    const types = (params.get('types') || '').split(',').filter(t => LIST_DOC_TYPES.includes(t));
+    docsListHash = location.hash;
+    const docs = await api('GET', `docs?type=${(types.length ? types : LIST_DOC_TYPES).join(',')}&from=${from}&to=${to}`);
+    const go = (f, t, ty) => { location.hash = `#/docs?from=${f}&to=${t}` + (ty.length ? '&types=' + ty.join(',') : ''); };
+    const fromInput = el('input', {type: 'date', value: from, onchange: e => e.target.value && go(e.target.value, to, types)});
+    const toInput = el('input', {type: 'date', value: to, onchange: e => e.target.value && go(from, e.target.value, types)});
+    const toggle = type => go(from, to, LIST_DOC_TYPES.filter(t => (t === type) !== types.includes(t)));
+    const typeButtons = el('div', {class: 'tabs toolbar'}, 'вид',
+        el('button', {class: types.length ? null : 'active', onclick: () => go(from, to, [])}, 'Все'),
+        LIST_DOC_TYPES.map(t => el('button', {class: types.includes(t) ? 'active' : null, onclick: () => toggle(t)}, DOC_FILTER[t])));
 
     const rows = docs.slice().reverse().map(doc => el('tr', {class: 'link', onclick: () => { location.hash = '#/docs/' + doc.id; }},
         el('td', {class: 'nowrap'}, humanDate(doc.date).split(',')[0] + ' ' + doc.time),
@@ -1126,9 +1140,10 @@ async function renderDocs(view, params) {
             el('button', {onclick: () => { location.hash = '#/docs/new?type=prices'; }}, 'Новая установка цен'),
             el('button', {onclick: () => { location.hash = '#/repost'; }}, 'Перепровести документы')),
         el('div', {class: 'toolbar'}, 'с', fromInput, 'по', toInput),
+        typeButtons,
         el('div', {class: 'table-wrap'}, el('table', {},
             el('thead', {}, el('tr', {}, el('th', {}, 'Дата и время'), el('th', {}, 'Документ'), el('th', {}, 'Статус'), el('th', {}, 'Клиент, комментарий'), el('th', {}, 'Состав'))),
-            el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 5, class: 'muted'}, 'За эти дни документов нет'))))));
+            el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 5, class: 'muted'}, types.length ? 'За эти дни документов выбранных видов нет' : 'За эти дни документов нет'))))));
 }
 
 // ---------- цены ----------

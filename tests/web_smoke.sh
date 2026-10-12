@@ -66,6 +66,7 @@ PAGES=(
     "requirements?date=2026-10-12&docs=$O1"
     "requirements?date=2026-10-12&docs=$O1,$O2"
     "docs"
+    "docs?from=2026-10-01&to=2026-10-31&types=sale,return"
     "docs/new?type=production"
     "docs/$P1"
     "docs/$P2"

@@ -24,6 +24,7 @@ SCENARIOS=(
     "report.js|#/docs"
     "inventory.js|#/docs"
     "repost.js|#/docs"
+    "doc_filter.js|#/docs?from=2026-10-01&to=2026-10-31"
 )
 
 failed=0
