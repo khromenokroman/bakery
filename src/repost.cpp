@@ -3,6 +3,7 @@
 #include <tuple>
 
 #include "errors.hpp"
+#include "period.hpp"
 
 namespace {
 
@@ -44,6 +45,7 @@ void Reposter::mark(DocKey const &key, std::int64_t cause_id) {
 }
 
 std::int64_t Reposter::count(std::string const &from) const {
+    Period{m_db}.check_open(from, "перепроводить документы с " + ru_moment(from));
     auto stmt = m_db.prepare(std::string("SELECT count(*)") + AFTER);
     stmt.bind(1, from).bind(2, 0);
     stmt.step();
@@ -51,6 +53,7 @@ std::int64_t Reposter::count(std::string const &from) const {
 }
 
 RepostStep Reposter::step(std::string const &from, std::optional<DocKey> const &after, std::int64_t epoch) {
+    Period{m_db}.check_open(from, "перепроводить документы с " + ru_moment(from));
     auto const cursor = after.value_or(DocKey{from, 0});
     auto next = m_db.prepare(std::string("SELECT id") + AFTER + " ORDER BY date, id LIMIT 1");
     next.bind(1, cursor.moment).bind(2, cursor.id);

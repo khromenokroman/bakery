@@ -11,6 +11,7 @@
 #include "errors.hpp"
 #include "groups.hpp"
 #include "partners.hpp"
+#include "period.hpp"
 #include "prices.hpp"
 #include "repost.hpp"
 #include "stock.hpp"
@@ -263,6 +264,7 @@ std::int64_t Documents::create(Document const &input) {
     doc.time = normalize_time(doc.time);
     normalize(doc);
     Transaction tx{m_db};
+    Period{m_db}.check_open(moment(doc), "создать документ от " + ru_moment(moment(doc)));
     if (doc.type == DocType::RETURN && doc.base_id) {
         auto const sale = get(*doc.base_id);
         doc.partner_id = sale.partner_id;
@@ -313,6 +315,9 @@ void Documents::update(Document const &doc) {
     checked.time = normalize_time(checked.time);
     checked.base_id = old.base_id;
     normalize(checked);
+    Period const period{m_db};
+    period.check_open(moment(old), "изменить документ «" + doc_title(old) + "»");
+    period.check_open(moment(checked), "перенести документ на " + ru_moment(moment(checked)));
     if (checked.type == DocType::RETURN && checked.base_id) {
         auto const sale = get(*checked.base_id);
         checked.partner_id = sale.partner_id;
@@ -373,7 +378,9 @@ void Documents::update(Document const &doc) {
 
 void Documents::remove(std::int64_t id) {
     Transaction tx{m_db};
-    if (get(id).status != "draft") {
+    auto const doc = get(id);
+    Period{m_db}.check_open(moment(doc), "удалить документ «" + doc_title(doc) + "»");
+    if (doc.status != "draft") {
         throw UserError("документ проведён, удалить его нельзя");
     }
     auto based = m_db.prepare("SELECT group_concat(number, ', ') FROM docs WHERE base_id = ?");
@@ -390,6 +397,7 @@ void Documents::remove(std::int64_t id) {
 void Documents::post(std::int64_t id) {
     Transaction tx{m_db};
     auto const doc = get(id);
+    Period{m_db}.check_open(moment(doc), "провести документ «" + doc_title(doc) + "»");
     if (doc.status == "posted") {
         throw UserError("документ уже проведён");
     }
@@ -409,6 +417,7 @@ void Documents::post(std::int64_t id) {
 void Documents::unpost(std::int64_t id) {
     Transaction tx{m_db};
     auto const doc = get(id);
+    Period{m_db}.check_open(moment(doc), "отменить проведение документа «" + doc_title(doc) + "»");
     if (doc.status != "posted") {
         throw UserError("документ не проведён");
     }
@@ -430,6 +439,7 @@ void Documents::unpost(std::int64_t id) {
 void Documents::repost(std::int64_t id) {
     Transaction tx{m_db};
     auto const doc = get(id);
+    Period{m_db}.check_open(moment(doc), "перепровести документ «" + doc_title(doc) + "»");
     if (doc.status != "posted") {
         throw UserError("документ не проведён");
     }

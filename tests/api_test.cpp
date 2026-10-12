@@ -649,3 +649,33 @@ TEST(ApiRepost, MarkAndSteps) {
 
     EXPECT_EQ(CALL(srv, "POST", "/api/repost/step", {{"date", "10.10.2026"}}).status, 400) << "дата не в формате ГГГГ-ММ-ДД";
 }
+
+/**
+ * @brief Закрытие периода через API: дата читается и меняется, документ в закрытом периоде не создаётся.
+ */
+TEST(ApiPeriod, CloseAndReject) {
+    TestServer srv;
+    auto r = CALL(srv, "GET", "/api/period");
+    EXPECT_TRUE(r.body.at("closed_till").is_null()) << r.body;
+
+    r = CALL(srv, "PUT", "/api/period", {{"closed_till", "2026-09-30"}});
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_EQ(r.body.at("closed_till"), "2026-09-30");
+    EXPECT_EQ(CALL(srv, "GET", "/api/period").body.at("closed_till"), "2026-09-30");
+    EXPECT_FALSE(CALL(srv, "GET", "/api/settings").body.contains("closed_till")) << "дата закрытия не реквизит";
+
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    r = CALL(srv, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-09-30"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}});
+    EXPECT_EQ(r.status, 400) << r.body;
+    EXPECT_THAT(r.body.value("error", ""), testing::HasSubstr("период по 30.09.2026 закрыт"));
+    r = CALL(srv, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-01"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}});
+    EXPECT_EQ(r.status, 201) << "после даты закрытия документ создаётся: " << r.body;
+
+    r = CALL(srv, "PUT", "/api/period", {{"closed_till", "30.09.2026"}});
+    EXPECT_EQ(r.status, 400) << "дата не в формате ГГГГ-ММ-ДД: " << r.body;
+    r = CALL(srv, "PUT", "/api/period", {{"closed_till", 5}});
+    EXPECT_EQ(r.status, 400) << r.body;
+    r = CALL(srv, "PUT", "/api/period", {{"closed_till", nullptr}});
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_TRUE(r.body.at("closed_till").is_null()) << "null открывает все периоды: " << r.body;
+}

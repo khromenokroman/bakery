@@ -32,6 +32,7 @@ add_library(${PROJECT_NAME}-core STATIC
         src/json_io.cpp
         src/options.cpp
         src/partners.cpp
+        src/period.cpp
         src/prices.cpp
         src/report.cpp
         src/repost.cpp
@@ -63,6 +64,7 @@ if (BUILD_TESTS)
             tests/groups_test.cpp
             tests/inventory_test.cpp
             tests/options_test.cpp
+            tests/period_test.cpp
             tests/sales_test.cpp
             tests/prices_test.cpp
             tests/report_test.cpp

@@ -74,7 +74,10 @@ std::map<std::string, std::string> Settings::all() const {
     }
     auto stmt = m_db.prepare("SELECT key, value FROM settings");
     while (stmt.step()) {
-        out[stmt.column_text(0)] = stmt.column_text(1);
+        // в settings хранятся и служебные ключи (дата закрытия периода): отдаются только реквизиты
+        if (auto const it = out.find(stmt.column_text(0)); it != out.end()) {
+            it->second = stmt.column_text(1);
+        }
     }
     return out;
 }

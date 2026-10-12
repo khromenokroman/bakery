@@ -10,6 +10,7 @@
 
 #include "errors.hpp"
 #include "json_io.hpp"
+#include "period.hpp"
 #include "report.hpp"
 #include "repost.hpp"
 #include "requirements.hpp"
@@ -120,6 +121,24 @@ void Api::register_routes(httplib::Server &server) {
                    Settings settings{m_db};
                    settings.update(values);
                    send_json(res, settings.all());
+               }));
+
+    auto const period_json = [this] {
+        auto const till = Period{m_db}.closed_till();
+        return nlohmann::json{{"closed_till", till ? nlohmann::json(*till) : nlohmann::json(nullptr)}};
+    };
+    server.Get("/api/period", guarded([period_json](httplib::Request const &, httplib::Response &res) { send_json(res, period_json()); }));
+    server.Put("/api/period", guarded([this, period_json](httplib::Request const &req, httplib::Response &res) {
+                   auto const j = parse_object(req.body);
+                   std::optional<std::string> till;
+                   if (j.contains("closed_till") && !j["closed_till"].is_null()) {
+                       if (!j["closed_till"].is_string()) {
+                           throw UserError("closed_till: нужна дата ГГГГ-ММ-ДД или null");
+                       }
+                       till = j["closed_till"].get<std::string>();
+                   }
+                   Period{m_db}.close(till);
+                   send_json(res, period_json());
                }));
 
     if (!m_web_dir.empty() && !server.set_mount_point("/", m_web_dir)) {
