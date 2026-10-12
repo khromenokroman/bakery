@@ -34,6 +34,7 @@ add_library(${PROJECT_NAME}-core STATIC
         src/partners.cpp
         src/prices.cpp
         src/report.cpp
+        src/repost.cpp
         src/requirements.cpp
         src/schema.cpp
         src/settings.cpp

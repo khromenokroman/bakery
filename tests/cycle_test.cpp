@@ -1,6 +1,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <optional>
@@ -12,6 +13,7 @@
 #include "fixture.hpp"
 #include "prices.hpp"
 #include "report.hpp"
+#include "repost.hpp"
 #include "stock.hpp"
 #include "test_util.hpp"
 
@@ -226,6 +228,28 @@ class CycleTest : public DbFixture {
         return {};
     }
 
+    /**
+     * @brief Перепроводит документы с момента from до конца или до ошибки, как веб-интерфейс.
+     * @return последний шаг: без документа - дошли до конца, с ошибкой - остановились
+     */
+    RepostStep repost_all(std::string const &from, std::optional<DocKey> after = std::nullopt) {
+        Reposter reposter{m_db};
+        auto const epoch = reposter.state().epoch;
+        m_reposted.clear();
+        for (;;) {
+            auto step = reposter.step(from, after, epoch);
+            if (!step.doc || step.error) {
+                return step;
+            }
+            m_reposted.push_back(step.doc->id);
+            after = DocKey{moment(*step.doc), step.doc->id};
+        }
+    }
+
+    /// Нужно ли перепроведение.
+    bool needed() { return Reposter{m_db}.state().from.has_value(); }
+
+    std::vector<std::int64_t> m_reposted; ///< документы, перепроведённые последним repost_all
     std::int64_t m_bread;
     std::int64_t m_cookie;
     std::int64_t m_retail;
@@ -421,16 +445,162 @@ TEST_F(CycleTest, UnpostAndRepost) {
 }
 
 /**
- * @brief Перепроведение изменённого документа задним числом: поступление 02.10 увеличено на 10 батонов.
- *
- * Документы после него не меняются, остаток на конец растёт на 10 шт.
+ * @brief Документы, проведённые по порядку времени, перепроведения не требуют.
  */
-TEST_F(CycleTest, RepostBackdated) {
+TEST_F(CycleTest, InOrderNoRepost) {
+    run_cycle();
+    EXPECT_FALSE(needed()) << "цикл проведён по порядку, отметки быть не должно";
+}
+
+/**
+ * @brief Поступление 02.10 увеличено на 10 батонов задним числом: инвентаризация 08.10 (насчитано 14)
+ * устарела, после неё 24 шт. Отметка указывает на поступление; перепроведение всех документов с 02.10
+ * возвращает насчитанное и снимает отметку.
+ */
+TEST_F(CycleTest, RepostAfterBackdatedChange) {
     run_cycle();
     auto bigger = m_docs.get(m_production);
     bigger.lines[0].qty = 110000;
     ASSERT_NO_THROW(m_docs.update(bigger));
-    EXPECT_EQ(qty(m_bread, "2026-10-02"), 50000) << "100 + 10 - 60";
-    EXPECT_EQ(line(m_production, m_bread).first, 1000) << "себестоимость на 02.10 при перепроведении";
-    EXPECT_EQ(qty(m_bread, "2026-10-07"), 25000);
+    EXPECT_EQ(qty(m_bread, "2026-10-07"), 25000) << "100 + 10 - 60 - 5 - 20";
+    EXPECT_EQ(qty(m_bread, "2026-10-08"), 24000) << "до перепроведения инвентаризация вычитает старую разницу 1 шт";
+
+    auto const state = Reposter{m_db}.state();
+    ASSERT_TRUE(state.from) << "после правки задним числом нужна отметка";
+    EXPECT_EQ(state.from->moment, "2026-10-02 08:00:00");
+    EXPECT_EQ(state.cause_id, m_production);
+    EXPECT_EQ(Reposter{m_db}.count(state.from->moment), 8)
+        << "2 поступления, 2 реализации, 2 списания, инвентаризация, возврат; установки цен не перепроводятся";
+
+    auto const last = repost_all(state.from->moment);
+    EXPECT_FALSE(last.error) << *last.error;
+    EXPECT_FALSE(last.doc) << "дошли до конца";
+    EXPECT_FALSE(last.needed) << "отметка снята";
+    EXPECT_FALSE(needed());
+    EXPECT_EQ(qty(m_bread, "2026-10-08"), 14000) << "после инвентаризации снова насчитанное";
+    expect_state(LAST_DAY, expected().back());
+}
+
+/**
+ * @brief Перепроведение останавливается на документе с ошибкой и продолжается после исправления.
+ *
+ * Поступление 02.10 увеличено на 10 батонов; пока инвентаризация не перепроведена, после неё 24 шт,
+ * и проходит реализация 20 шт на 08.10 21:00. Перепроведение инвентаризации даёт 14 шт - реализации
+ * не хватает: остановка на инвентаризации, отметка остаётся. Реализацию отменяют, перепроведение
+ * продолжается с инвентаризации и доходит до конца.
+ */
+TEST_F(CycleTest, RepostStopsOnError) {
+    run_cycle();
+    auto bigger = m_docs.get(m_production);
+    bigger.lines[0].qty = 110000;
+    m_docs.update(bigger);
+    auto const late_sale = post(make(DocType::SALE, "2026-10-08", "21:00", {{m_bread, 20000, 3000}}));
+
+    auto const from = Reposter{m_db}.state().from->moment;
+    auto const stop = repost_all(from);
+    ASSERT_TRUE(stop.doc);
+    EXPECT_EQ(stop.doc->id, m_inventory) << "остановились на инвентаризации";
+    ASSERT_TRUE(stop.error);
+    EXPECT_THAT(*stop.error, testing::HasSubstr("«Батон»: остаток на 08.10.2026 21:00 уйдёт в минус"));
+    EXPECT_THAT(doc_title(*stop.doc), testing::StrEq("Инвентаризация № 1 от 08.10.2026 20:00"));
+    EXPECT_TRUE(needed()) << "не дошли до конца - отметка остаётся";
+    EXPECT_EQ(qty(m_bread, "2026-10-08"), 4000) << "инвентаризация осталась прежней: 24 - 20";
+
+    auto const done = m_reposted;
+    ASSERT_FALSE(done.empty());
+    m_docs.unpost(late_sale);
+    auto const last_ok = m_docs.get(done.back());
+    auto const rest = repost_all(from, DocKey{moment(last_ok), last_ok.id});
+    EXPECT_FALSE(rest.error) << *rest.error;
+    EXPECT_EQ(m_reposted.front(), m_inventory) << "продолжили с остановившего документа";
+    EXPECT_FALSE(needed());
+    expect_state(LAST_DAY, expected().back());
+}
+
+/**
+ * @brief Себестоимость батона 04.10 исправлена с 12,00 на 13,00: строки документов после неё
+ * получают новую себестоимость только при перепроведении, после него отчёт сходится с ценой.
+ */
+TEST_F(CycleTest, RepostAfterCostFix) {
+    run_cycle();
+    auto prices = m_docs.list({.types = {DocType::PRICES}, .date_from = "2026-10-04", .date_to = "2026-10-04"});
+    auto fix = *std::find_if(prices.begin(), prices.end(), [](auto const &d) { return d.price_type_id == COST_PRICE_TYPE; });
+    fix.lines[0].price_kop = 1300;
+    m_docs.update(fix);
+    EXPECT_EQ(line(m_sale2, m_bread).first, 1200) << "до перепроведения строка со старой себестоимостью";
+    ASSERT_TRUE(needed());
+    EXPECT_EQ(Reposter{m_db}.state().cause_id, fix.id);
+
+    EXPECT_FALSE(repost_all("2026-10-04").error);
+    EXPECT_EQ(line(m_sale2, m_bread).first, 1300);
+    EXPECT_EQ(line(m_return, m_bread).first, 1300);
+    EXPECT_EQ(line(m_production, m_bread).first, 1000) << "до 04.10 себестоимость прежняя";
+    EXPECT_FALSE(needed());
+    auto const r = goods_report(m_db, "2026-10-01", LAST_DAY);
+    EXPECT_EQ(r.closing_sum, 74 * 1300 + 39000) << "74 батона × 13,00 + 2,6 кг печенья × 150,00";
+}
+
+/**
+ * @brief Цена реализации изменена после возврата: возврат берёт новую цену при перепроведении.
+ */
+TEST_F(CycleTest, RepostReturnPrice) {
+    run_cycle();
+    auto sale = m_docs.get(m_sale);
+    sale.lines[0].price_kop = 2600;
+    m_docs.update(sale);
+    ASSERT_TRUE(needed()) << "у реализации есть проведённый возврат";
+    EXPECT_EQ(line(m_return, m_bread).second, 2500);
+    EXPECT_FALSE(repost_all("2026-10-02").error);
+    EXPECT_EQ(line(m_return, m_bread).second, 2600);
+}
+
+/**
+ * @brief Отметку не ставят: розничные цены задним числом (не хранятся в документах), правка черновика,
+ * складской документ без проведённой инвентаризации после него.
+ */
+TEST_F(CycleTest, NoMarkWithoutDependents) {
+    run_cycle();
+    set_prices(m_retail, "2026-10-03", "12:00", {{m_bread, 0, 2700}});
+    EXPECT_FALSE(needed()) << "розница задним числом";
+    auto draft = make(DocType::WRITEOFF, "2026-10-03", "12:00", {{m_bread, 1000}}, "брак");
+    draft.id = m_docs.create(draft);
+    draft.lines[0].qty = 2000;
+    m_docs.update(draft);
+    EXPECT_FALSE(needed()) << "черновик задним числом";
+    post(make(DocType::WRITEOFF, "2026-10-09", "12:00", {{m_bread, 1000}}, "брак"));
+    EXPECT_FALSE(needed()) << "списание 09.10: инвентаризация 08.10 раньше";
+    m_docs.post(draft.id);
+    EXPECT_TRUE(needed()) << "списание 03.10 раньше инвентаризации 08.10";
+}
+
+/**
+ * @brief Отметка, поставленная во время перепроведения, не снимается им; перепроведение, начатое
+ * позже отметки, её тоже не снимает.
+ */
+TEST_F(CycleTest, RepostKeepsNewerMark) {
+    run_cycle();
+    auto bigger = m_docs.get(m_production);
+    bigger.lines[0].qty = 110000;
+    m_docs.update(bigger);
+
+    Reposter reposter{m_db};
+    auto const epoch = reposter.state().epoch;
+    auto const first = reposter.step("2026-10-02", std::nullopt, epoch);
+    ASSERT_TRUE(first.doc);
+    post(make(DocType::WRITEOFF, "2026-10-03", "12:00", {{m_bread, 1000}}, "брак"));
+    std::optional<DocKey> after = DocKey{moment(*first.doc), first.doc->id};
+    for (;;) {
+        auto const step = reposter.step("2026-10-02", after, epoch);
+        ASSERT_FALSE(step.error) << *step.error;
+        if (!step.doc) {
+            EXPECT_TRUE(step.needed) << "во время перепроведения появилась новая правка задним числом";
+            break;
+        }
+        after = DocKey{moment(*step.doc), step.doc->id};
+    }
+
+    EXPECT_FALSE(repost_all("2026-10-05").error);
+    EXPECT_TRUE(needed()) << "начато 05.10, а отметка с 02.10";
+    EXPECT_FALSE(repost_all("2026-10-02").error);
+    EXPECT_FALSE(needed());
 }

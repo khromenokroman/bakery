@@ -8,7 +8,7 @@
 namespace {
 
 /// Миграции схемы. Применённую миграцию не менять: изменения только новой миграцией в конце.
-constexpr std::array<std::string_view, 10> MIGRATIONS = {
+constexpr std::array<std::string_view, 11> MIGRATIONS = {
     // 1: справочники, документы, движения склада
     R"sql(
 CREATE TABLE items (
@@ -174,6 +174,18 @@ UPDATE stock_moves SET cost_kop = (SELECT l.cost_kop FROM doc_lines l WHERE l.do
 DROP INDEX stock_moves_cover;
 CREATE INDEX stock_moves_cover ON stock_moves (item_id, date, qty, cost_kop);
 CREATE INDEX stock_moves_date ON stock_moves (date);
+)sql",
+    // 11: отметка «нужно перепровести документы» после изменения задним числом: с какого места и из-за
+    // какого документа; epoch растёт при каждой отметке
+    R"sql(
+CREATE TABLE repost (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    from_date TEXT,
+    from_id INTEGER,
+    cause_id INTEGER REFERENCES docs (id) ON DELETE SET NULL,
+    epoch INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO repost (id) VALUES (1);
 )sql",
 };
 

@@ -599,3 +599,53 @@ TEST(ApiInventory, FillAndPost) {
     r = CALL(srv, "GET", "/api/stock?date=2026-10-10&time=21:00&exclude=" + inv);
     EXPECT_EQ(r.body.size(), 2U) << "учёт без движений инвентаризации: " << r.body;
 }
+
+/**
+ * @brief Отметка о перепроведении и пошаговое перепроведение через API: поступление после
+ * инвентаризации исправлено задним числом, /api/repost показывает причину, шаги идут до конца.
+ */
+TEST(ApiRepost, MarkAndSteps) {
+    TestServer srv;
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    auto const prod = CALL(srv, "POST", "/api/docs",
+                           {{"type", "production"}, {"date", "2026-10-10"}, {"time", "08:00"}, {"lines", {{{"item_id", bread}, {"qty", 10000}}}}})
+                          .body.at("id")
+                          .dump();
+    CALL(srv, "POST", "/api/docs/" + prod + "/post");
+    auto const inv = CALL(srv, "POST", "/api/docs",
+                          {{"type", "inventory"}, {"date", "2026-10-10"}, {"time", "20:00"}, {"lines", {{{"item_id", bread}, {"qty", 9000}}}}})
+                         .body.at("id")
+                         .dump();
+    CALL(srv, "POST", "/api/docs/" + inv + "/post");
+
+    auto r = CALL(srv, "GET", "/api/repost");
+    EXPECT_EQ(r.body.at("needed"), false) << r.body;
+
+    CALL(srv, "PUT", "/api/docs/" + prod, {{"date", "2026-10-10"}, {"time", "08:00"}, {"lines", {{{"item_id", bread}, {"qty", 12000}}}}});
+    r = CALL(srv, "GET", "/api/repost");
+    ASSERT_EQ(r.body.at("needed"), true) << r.body;
+    EXPECT_EQ(r.body.at("from").at("moment"), "2026-10-10 08:00:00");
+    EXPECT_EQ(r.body.at("cause").at("title"), "Поступление из производства № 1 от 10.10.2026 08:00");
+    EXPECT_EQ(r.body.at("count"), 2);
+    auto const epoch = r.body.at("epoch");
+    EXPECT_EQ(CALL(srv, "GET", "/api/repost/count?date=2026-10-10&time=12:00").body.at("count"), 1) << "только инвентаризация";
+
+    nlohmann::json after = nullptr;
+    std::vector<std::string> titles;
+    for (int i = 0; i < 5; ++i) {
+        r = CALL(srv, "POST", "/api/repost/step", {{"date", "2026-10-10"}, {"time", "00:00"}, {"after", after}, {"epoch", epoch}});
+        ASSERT_EQ(r.status, 200) << r.body;
+        ASSERT_TRUE(r.body.at("error").is_null()) << r.body;
+        if (r.body.at("doc").is_null()) {
+            break;
+        }
+        titles.push_back(r.body.at("doc").at("title"));
+        after = {{"moment", r.body.at("doc").at("moment")}, {"id", r.body.at("doc").at("id")}};
+    }
+    EXPECT_THAT(titles, testing::ElementsAre("Поступление из производства № 1 от 10.10.2026 08:00", "Инвентаризация № 1 от 10.10.2026 20:00"));
+    EXPECT_EQ(r.body.at("needed"), false) << "дошли до конца: " << r.body;
+    r = CALL(srv, "GET", "/api/stock");
+    EXPECT_EQ(r.body.at(0).at("qty"), 9000) << "после инвентаризации насчитанное: " << r.body;
+
+    EXPECT_EQ(CALL(srv, "POST", "/api/repost/step", {{"date", "10.10.2026"}}).status, 400) << "дата не в формате ГГГГ-ММ-ДД";
+}

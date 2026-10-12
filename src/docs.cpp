@@ -12,6 +12,7 @@
 #include "groups.hpp"
 #include "partners.hpp"
 #include "prices.hpp"
+#include "repost.hpp"
 #include "stock.hpp"
 
 namespace {
@@ -150,6 +151,20 @@ std::string normalize_time(std::string_view time) {
 }
 
 std::string moment(Document const &doc) { return doc.date + " " + doc.time; }
+
+std::string doc_title(Document const &doc) {
+    static constexpr std::array<std::pair<DocType, char const *>, 7> NAMES = {{
+        {DocType::ORDER, "Заявка"},
+        {DocType::PRODUCTION, "Поступление из производства"},
+        {DocType::SALE, "Реализация"},
+        {DocType::RETURN, "Возврат"},
+        {DocType::WRITEOFF, "Списание"},
+        {DocType::INVENTORY, "Инвентаризация"},
+        {DocType::PRICES, "Установка цен"},
+    }};
+    auto const it = std::find_if(NAMES.begin(), NAMES.end(), [&](auto const &p) { return p.first == doc.type; });
+    return std::string(it->second) + " № " + std::to_string(doc.number) + " от " + ru_moment(moment(doc));
+}
 
 std::string ru_moment(std::string const &moment) {
     auto out = ru_date(moment.substr(0, 10));
@@ -350,6 +365,8 @@ void Documents::update(Document const &doc) {
         auto const fresh = moved_items(doc.id);
         items.insert(items.end(), fresh.begin(), fresh.end());
         Stock{m_db}.check_non_negative(items);
+        mark_backdated(old, moment(old));
+        mark_backdated(get(doc.id), moment(checked));
     }
     tx.commit();
 }
@@ -385,6 +402,7 @@ void Documents::post(std::int64_t id) {
     upd.bind(1, id);
     upd.step();
     Stock{m_db}.check_non_negative(moved_items(id));
+    mark_backdated(doc, moment(doc));
     tx.commit();
 }
 
@@ -405,7 +423,53 @@ void Documents::unpost(std::int64_t id) {
     upd.bind(1, id);
     upd.step();
     Stock{m_db}.check_non_negative(moved);
+    mark_backdated(doc, moment(doc));
     tx.commit();
+}
+
+void Documents::repost(std::int64_t id) {
+    Transaction tx{m_db};
+    auto const doc = get(id);
+    if (doc.status != "posted") {
+        throw UserError("документ не проведён");
+    }
+    if (!moves_stock(doc.type)) {
+        // установка цен хранит только цены, пересчитывать нечего
+        return;
+    }
+    auto items = moved_items(id);
+    auto del = m_db.prepare("DELETE FROM doc_lines WHERE doc_id = ?");
+    del.bind(1, id);
+    del.step();
+    write_lines(doc);
+    auto moves = m_db.prepare("DELETE FROM stock_moves WHERE doc_id = ?");
+    moves.bind(1, id);
+    moves.step();
+    write_moves(get(id));
+    auto const fresh = moved_items(id);
+    items.insert(items.end(), fresh.begin(), fresh.end());
+    Stock{m_db}.check_non_negative(items);
+    tx.commit();
+}
+
+void Documents::mark_backdated(Document const &doc, std::string const &at) {
+    std::string depends;
+    if (moves_stock(doc.type)) {
+        depends = "d.type = 'inventory'";
+    } else if (doc.type == DocType::PRICES && doc.price_type_id == COST_PRICE_TYPE) {
+        depends = "d.type IN ('production', 'sale', 'return', 'writeoff', 'inventory')";
+    } else {
+        return;
+    }
+    auto later = m_db.prepare(
+        "SELECT EXISTS (SELECT 1 FROM docs d WHERE d.status = 'posted' AND d.id <> ?2"
+        " AND (d.date > ?1 OR (d.date = ?1 AND d.id > ?2)) AND " +
+        depends + ") OR EXISTS (SELECT 1 FROM docs d WHERE d.status = 'posted' AND d.type = 'return' AND d.base_id = ?2)");
+    later.bind(1, at).bind(2, doc.id);
+    later.step();
+    if (later.column_int(0) != 0) {
+        Reposter{m_db}.mark(DocKey{at, doc.id}, doc.id);
+    }
 }
 
 void Documents::validate(Document const &doc, std::vector<std::int64_t> const &old_items) const {

@@ -11,6 +11,7 @@
 #include "errors.hpp"
 #include "json_io.hpp"
 #include "report.hpp"
+#include "repost.hpp"
 #include "requirements.hpp"
 #include "schema.hpp"
 #include "settings.hpp"
@@ -63,6 +64,18 @@ std::int64_t path_id(httplib::Request const &req) {
         throw NotFoundError("неверный id: " + text);
     }
     return id;
+}
+
+/// Заголовок документа для ответов перепроведения: место в порядке проведения и название.
+nlohmann::json doc_header(Document const &doc) {
+    return {{"id", doc.id},     {"type", to_string(doc.type)}, {"number", doc.number},   {"date", doc.date},
+            {"time", doc.time}, {"moment", moment(doc)},       {"title", doc_title(doc)}};
+}
+
+/// Момент из даты и времени запроса: "ГГГГ-ММ-ДД ЧЧ:ММ:СС"; время по умолчанию 00:00.
+std::string parse_moment(std::string const &date, std::string const &time) {
+    check_date(date);
+    return date + " " + normalize_time(time.empty() ? "00:00" : time);
 }
 
 } // namespace
@@ -267,6 +280,44 @@ void Api::register_docs(httplib::Server &server) {
                     auto const id = path_id(req);
                     m_docs.unpost(id);
                     send_json(res, to_json(m_docs.get(id)));
+                }));
+
+    server.Get(
+        "/api/repost", guarded([this](httplib::Request const &, httplib::Response &res) {
+            Reposter const reposter{m_db};
+            auto const state = reposter.state();
+            nlohmann::json out{{"needed", state.from.has_value()}, {"epoch", state.epoch}, {"from", nullptr}, {"cause", nullptr}, {"count", 0}};
+            if (state.from) {
+                out["from"] = {{"moment", state.from->moment}, {"id", state.from->id}};
+                out["count"] = reposter.count(state.from->moment);
+            }
+            if (state.cause_id) {
+                out["cause"] = doc_header(m_docs.get(*state.cause_id));
+            }
+            send_json(res, out);
+        }));
+
+    server.Get("/api/repost/count", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   send_json(res, {{"count", Reposter{m_db}.count(parse_moment(req.get_param_value("date"), req.get_param_value("time")))}});
+               }));
+
+    server.Post("/api/repost/step", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                    auto const j = parse_object(req.body);
+                    auto const from = parse_moment(j.value("date", ""), j.value("time", ""));
+                    std::optional<DocKey> after;
+                    if (j.contains("after") && j["after"].is_object()) {
+                        auto const &a = j["after"];
+                        after = DocKey{a.value("moment", ""), a.value("id", std::int64_t{0})};
+                    }
+                    auto const step = Reposter{m_db}.step(from, after, j.value("epoch", std::int64_t{0}));
+                    nlohmann::json out{{"doc", nullptr}, {"error", nullptr}, {"remaining", step.remaining}, {"needed", step.needed}};
+                    if (step.doc) {
+                        out["doc"] = doc_header(*step.doc);
+                    }
+                    if (step.error) {
+                        out["error"] = *step.error;
+                    }
+                    send_json(res, out);
                 }));
 
     server.Get("/api/stock", guarded([this](httplib::Request const &req, httplib::Response &res) {
