@@ -266,6 +266,34 @@ table.needs {
     max-width: 640px;
 }
 
+#repost-banner {
+    margin: 12px 16px 0;
+    padding: 8px 12px;
+    background: #fff6e0;
+    color: #7a5200;
+    border-radius: 4px;
+}
+
+#repost-banner a,
+.warnings a {
+    color: inherit;
+    font-weight: 600;
+}
+
+.repost-progress progress {
+    width: 100%;
+    max-width: 640px;
+    height: 18px;
+}
+
+.repost-error {
+    max-width: 640px;
+    padding: 8px 12px;
+    background: var(--error-bg);
+    color: var(--error-fg);
+    border-radius: 4px;
+}
+
 .actions {
     position: sticky;
     top: 0;
@@ -665,4 +693,8 @@ table.f-grid {
     .muted {
         color: #555;
     }
+}
+
+.ok-text {
+    color: var(--ok-fg);
 }

@@ -17,6 +17,10 @@ async function api(method, path, body) {
     if (!res.ok) {
         throw new Error(data && data.error ? data.error : res.status + ' ' + res.statusText);
     }
+    if (method !== 'GET' && !path.startsWith('repost')) {
+        // любое изменение могло быть задним числом
+        refreshRepostBanner();
+    }
     return data;
 }
 
@@ -1119,7 +1123,8 @@ async function renderDocs(view, params) {
             el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=sale'; }}, 'Новая реализация'),
             el('button', {onclick: () => { location.hash = '#/docs/new?type=writeoff'; }}, 'Новое списание'),
             el('button', {onclick: () => { location.hash = '#/docs/new?type=inventory'; }}, 'Новая инвентаризация'),
-            el('button', {onclick: () => { location.hash = '#/docs/new?type=prices'; }}, 'Новая установка цен')),
+            el('button', {onclick: () => { location.hash = '#/docs/new?type=prices'; }}, 'Новая установка цен'),
+            el('button', {onclick: () => { location.hash = '#/repost'; }}, 'Перепровести документы')),
         el('div', {class: 'toolbar'}, 'с', fromInput, 'по', toInput),
         el('div', {class: 'table-wrap'}, el('table', {},
             el('thead', {}, el('tr', {}, el('th', {}, 'Дата и время'), el('th', {}, 'Документ'), el('th', {}, 'Статус'), el('th', {}, 'Клиент, комментарий'), el('th', {}, 'Состав'))),
@@ -1702,6 +1707,143 @@ async function renderStock(view, params) {
                 : el('tr', {}, el('td', {colspan: 4, class: 'muted'}, 'Остатков нет'))))));
 }
 
+// ---------- перепроведение ----------
+
+/** Момент "2026-10-02 08:00:00" для людей: "02.10.2026 08:00", без времени, если оно 00:00. */
+function humanMoment(moment) {
+    const time = moment.slice(11, 16);
+    return moment.slice(0, 10).split('-').reverse().join('.') + (time && time !== '00:00' ? ' ' + time : '');
+}
+
+/** Предупреждение над страницей, если документы изменены задним числом и нужно перепроведение. */
+async function refreshRepostBanner() {
+    const box = document.getElementById('repost-banner');
+    try {
+        const state = await api('GET', 'repost');
+        const onPage = location.hash.startsWith('#/repost');
+        box.hidden = !state.needed || onPage;
+        if (state.needed) {
+            render(box,
+                '⚠ ',
+                state.cause ? ['Документ ', el('a', {href: '#/docs/' + state.cause.id}, state.cause.title), ' изменён задним числом. '] : 'Документы изменены задним числом. ',
+                `Нужно перепровести документы с ${humanMoment(state.from.moment)} (документов: ${state.count}). `,
+                el('a', {href: '#/repost'}, 'Перепровести'));
+        }
+    } catch {
+        box.hidden = true;
+    }
+}
+
+/**
+ * Перепроведение всех документов с момента: по одному запросу на документ, с прогрессом;
+ * на ошибке остановка с документом и причиной, «Продолжить» - с того же документа.
+ */
+async function renderRepost(view, params) {
+    const state = await api('GET', 'repost');
+    const start = state.needed ? state.from.moment : isoDate(new Date()) + ' 00:00:00';
+    const dateInput = el('input', {type: 'date', value: params.get('date') || start.slice(0, 10)});
+    const timeInput = el('input', {type: 'time', value: params.get('time') || start.slice(11, 16)});
+    const countText = el('span', {class: 'muted'});
+    const status = el('div', {class: 'repost-progress'});
+    let running = false;
+    let stopRequested = false;
+    let after = null;
+    let epoch = 0;
+    let done = 0;
+
+    const updateCount = async () => {
+        if (!dateInput.value) {
+            return;
+        }
+        const {count} = await api('GET', `repost/count?date=${dateInput.value}&time=${timeInput.value || '00:00'}`);
+        countText.textContent = `документов к перепроведению: ${count}`;
+    };
+    dateInput.addEventListener('change', () => { after = null; updateCount().catch(e => showMessage(e.message)); });
+    timeInput.addEventListener('change', () => { after = null; updateCount().catch(e => showMessage(e.message)); });
+
+    const startButton = el('button', {class: 'primary', onclick: () => run()}, 'Перепровести');
+    const stopButton = el('button', {hidden: true, onclick: () => { stopRequested = true; }}, 'Остановить');
+
+    const run = async () => {
+        if (running || !dateInput.value) {
+            return;
+        }
+        running = true;
+        stopRequested = false;
+        startButton.disabled = dateInput.disabled = timeInput.disabled = true;
+        stopButton.hidden = false;
+        showMessage('');
+        if (!after) {
+            done = 0;
+            // номер отметок на начало: если за время работы появится новая правка задним числом,
+            // сервер не снимет предупреждение (и при «Продолжить» тоже)
+            epoch = (await api('GET', 'repost')).epoch;
+        }
+        const body = {date: dateInput.value, time: timeInput.value || '00:00', epoch};
+        const bar = el('progress', {max: 1, value: 0});
+        const counter = el('div', {});
+        const current = el('div', {class: 'muted'});
+        render(status, bar, counter, current);
+        let finish = null;
+        try {
+            for (;;) {
+                if (stopRequested) {
+                    finish = () => render(status, el('p', {}, `Остановлено: перепроведено ${done}. «Продолжить» - со следующего документа.`));
+                    break;
+                }
+                const step = await api('POST', 'repost/step', {...body, after});
+                if (!step.doc) {
+                    finish = () => render(status,
+                        el('p', {class: 'ok-text'}, done ? `Готово: перепроведено документов ${done}.` : 'Документов с этого момента нет.'),
+                        step.needed ? el('div', {class: 'warnings'}, '⚠ Пока шло перепроведение, документы снова изменили задним числом: перепроведите ещё раз.') : null);
+                    after = null;
+                    break;
+                }
+                const total = done + 1 + step.remaining;
+                if (step.error) {
+                    bar.max = total;
+                    bar.value = done;
+                    finish = () => render(status, bar, counter,
+                        el('div', {class: 'repost-error'},
+                            'Остановлено на документе ', el('a', {href: '#/docs/' + step.doc.id}, step.doc.title), ': ', step.error),
+                        el('p', {class: 'muted'}, 'Исправьте документ или те, что ему мешают, и нажмите «Продолжить»: перепроведение начнётся с него.'));
+                    break;
+                }
+                done += 1;
+                after = {moment: step.doc.moment, id: step.doc.id};
+                bar.max = total;
+                bar.value = done;
+                counter.textContent = `Перепроведено ${done} из ${total}`;
+                current.textContent = step.doc.title;
+            }
+        } catch (e) {
+            showMessage(e.message);
+        }
+        running = false;
+        startButton.disabled = dateInput.disabled = timeInput.disabled = false;
+        startButton.textContent = after ? 'Продолжить' : 'Перепровести';
+        stopButton.hidden = true;
+        if (finish) {
+            finish();
+        }
+        refreshRepostBanner();
+    };
+
+    render(view,
+        el('a', {class: 'back', href: '#/docs'}, '← Документы'),
+        el('h2', {}, 'Перепроведение документов'),
+        state.needed
+            ? el('div', {class: 'warnings'}, '⚠ ',
+                state.cause ? ['Документ ', el('a', {href: '#/docs/' + state.cause.id}, state.cause.title), ' изменён задним числом. '] : '',
+                `Документы с ${humanMoment(state.from.moment)} нужно перепровести.`)
+            : el('p', {class: 'muted'}, 'Изменений задним числом нет. Перепровести можно с любого момента.'),
+        el('p', {class: 'muted'}, 'Проведённые документы перепроводятся по порядку времени: себестоимость строк - на момент документа, ' +
+            'инвентаризация - заново от учётного остатка. На первой ошибке перепроведение остановится.'),
+        el('div', {class: 'toolbar'}, 'с', dateInput, timeInput, startButton, stopButton, countText),
+        status);
+    await updateCount();
+}
+
 // ---------- расчёт потребности ----------
 
 function needsTable(title, needs, note) {
@@ -1744,7 +1886,7 @@ async function route() {
     const view = document.getElementById('view');
     const [hash, query] = (location.hash || '#/items').split('?');
     const params = new URLSearchParams(query || '');
-    const section = {requirements: 'orders', report: 'stock'}[hash.split('/')[1]] || hash.split('/')[1];
+    const section = {requirements: 'orders', report: 'stock', repost: 'docs'}[hash.split('/')[1]] || hash.split('/')[1];
     document.body.classList.toggle('print-page', section === 'print');
     for (const a of document.querySelectorAll('nav a[data-section]')) {
         a.classList.toggle('active', a.dataset.section === section);
@@ -1778,6 +1920,8 @@ async function route() {
             await renderReport(view, params);
         } else if (hash === '#/stock') {
             await renderStock(view, params);
+        } else if (hash === '#/repost') {
+            await renderRepost(view, params);
         } else if (hash === '#/requirements') {
             await renderRequirements(view, params);
         } else {
@@ -1788,8 +1932,9 @@ async function route() {
     }
 }
 
-window.addEventListener('hashchange', () => { showMessage(''); route(); });
+window.addEventListener('hashchange', () => { showMessage(''); route(); refreshRepostBanner(); });
 route();
+refreshRepostBanner();
 
 api('GET', 'version')
     .then(v => document.getElementById('version').textContent = `bakery ${v.version}, схема ${v.schema}`)

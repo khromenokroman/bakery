@@ -100,6 +100,8 @@ PAGES=(
     "docs/$INV"
     "docs/new?type=inventory"
     "print/$INV"
+    "repost"
+    "repost?date=2026-10-12&time=08:00"
 )
 
 failed=0

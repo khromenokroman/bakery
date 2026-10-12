@@ -23,6 +23,7 @@ SCENARIOS=(
     "settings_print.js|#/docs"
     "report.js|#/docs"
     "inventory.js|#/docs"
+    "repost.js|#/docs"
 )
 
 failed=0
