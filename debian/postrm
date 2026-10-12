@@ -1,0 +1,15 @@
+#!/bin/sh
+# Снятие службы. База /var/lib/bakery и пользователь bakery остаются и при purge: это данные учёта.
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl --system daemon-reload >/dev/null || true
+fi
+if [ "$1" = "remove" ]; then
+    deb-systemd-helper mask bakery.service >/dev/null || true
+fi
+if [ "$1" = "purge" ]; then
+    deb-systemd-helper purge bakery.service >/dev/null || true
+    deb-systemd-helper unmask bakery.service >/dev/null || true
+fi
+exit 0

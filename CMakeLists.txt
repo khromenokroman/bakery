@@ -87,6 +87,17 @@ install(FILES debian/copyright
         DESTINATION ${CMAKE_INSTALL_DOCDIR}
 )
 
+# служба systemd: пользователь bakery, база в /var/lib/bakery, параметры в /etc/default/bakery
+configure_file(debian/bakery.service.in bakery.service @ONLY)
+configure_file(debian/conffiles.in conffiles @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/bakery.service
+        DESTINATION lib/systemd/system
+)
+install(FILES debian/default
+        DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/default
+        RENAME bakery
+)
+
 set(CPACK_PACKAGE_NAME "${PROJECT_NAME}")
 set(CPACK_PACKAGE_VENDOR "khromenokroman")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
@@ -102,6 +113,14 @@ set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 set(CPACK_DEBIAN_PACKAGE_SECTION "misc")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "adduser, init-system-helpers")
+set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+        ${CMAKE_CURRENT_BINARY_DIR}/conffiles
+        ${CMAKE_CURRENT_SOURCE_DIR}/debian/postinst
+        ${CMAKE_CURRENT_SOURCE_DIR}/debian/prerm
+        ${CMAKE_CURRENT_SOURCE_DIR}/debian/postrm
+)
+set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION ON)
 set(CPACK_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 
 include(CPack)

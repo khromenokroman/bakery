@@ -1,0 +1,22 @@
+[Unit]
+Description=Учёт пекарни: веб-сервер
+Documentation=https://github.com/khromenokroman/bakery
+After=network.target
+
+[Service]
+User=bakery
+Group=bakery
+EnvironmentFile=-@CMAKE_INSTALL_FULL_SYSCONFDIR@/default/bakery
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/bakery --db /var/lib/bakery/bakery.db --web @BAKERY_WEB_DIR@ $BAKERY_OPTS
+Restart=on-failure
+StateDirectory=bakery
+StateDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+[Install]
+WantedBy=multi-user.target

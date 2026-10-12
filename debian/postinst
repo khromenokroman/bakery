@@ -1,0 +1,29 @@
+#!/bin/sh
+# Пользователь службы, каталог базы, включение и (пере)запуск службы.
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent passwd bakery >/dev/null; then
+        adduser --system --group --quiet --home /var/lib/bakery --no-create-home bakery
+    fi
+    install -d -o bakery -g bakery -m 0750 /var/lib/bakery
+fi
+
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ]; then
+    # как dh_installsystemd: служба включается при установке, выключенная администратором - остаётся выключенной
+    deb-systemd-helper unmask bakery.service >/dev/null || true
+    if deb-systemd-helper --quiet was-enabled bakery.service; then
+        deb-systemd-helper enable bakery.service >/dev/null || true
+    else
+        deb-systemd-helper update-state bakery.service >/dev/null || true
+    fi
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null || true
+        if [ -n "$2" ]; then
+            deb-systemd-invoke restart bakery.service >/dev/null
+        else
+            deb-systemd-invoke start bakery.service >/dev/null
+        fi
+    fi
+fi
+exit 0
