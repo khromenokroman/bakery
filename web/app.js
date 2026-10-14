@@ -1234,6 +1234,25 @@ async function renderDoc(view, id, params) {
 const DOC_FILTER = {production: 'Поступление', sale: 'Реализация', return: 'Возврат', writeoff: 'Списание', inventory: 'Инвентаризация', prices: 'Установка цен'};
 const ALL_DOC_TYPES = Object.keys(DOC_FILTER);
 
+/**
+ * Сумма документа для списка: реализация и возврат - по ценам строк, поступление, списание и
+ * инвентаризация (по факту) - по себестоимости; у установки цен суммы нет. Строки без цены или
+ * себестоимости не входят, сумма тогда со звёздочкой.
+ */
+function docSumCell(doc) {
+    if (doc.type === 'prices' || doc.type === 'order') {
+        return el('td');
+    }
+    const byPrice = doc.type === 'sale' || doc.type === 'return';
+    const values = doc.lines.map(l => (byPrice ? l.price_kop : l.cost_kop));
+    const total = doc.lines.reduce((sum, l, i) => sum + (values[i] === null ? 0 : lineSum(l.qty, values[i])), 0);
+    const missing = values.some(v => v === null);
+    return el('td', {
+        class: 'num nowrap',
+        title: (byPrice ? 'по ценам документа' : 'по себестоимости') + (missing ? '; * у части строк нет ' + (byPrice ? 'цены' : 'себестоимости') : ''),
+    }, formatMoney(total) + (missing ? ' *' : ''));
+}
+
 async function renderDocs(view, params) {
     // установки цен видит только технолог и администратор
     const listTypes = ALL_DOC_TYPES.filter(t => t !== 'prices' || canManage());
@@ -1258,7 +1277,7 @@ async function renderDocs(view, params) {
         el('td', {}, `${DOC_TYPES[doc.type].title} № ${doc.number}`),
         el('td', {class: 'nowrap'}, el('span', {class: 'status ' + doc.status}, doc.status === 'posted' ? 'проведён' : 'не проведён')),
         el('td', {}, orderFrom(doc)),
-        el('td', {}, doc.type === 'prices' ? doc.lines.map(l => l.name).join(', ') : lineSummary(doc.lines))));
+        docSumCell(doc)));
 
     render(view,
         el('h2', {}, 'Документы'),
@@ -1272,7 +1291,7 @@ async function renderDocs(view, params) {
         el('div', {class: 'toolbar'}, 'с', fromInput, 'по', toInput),
         typeButtons,
         el('div', {class: 'table-wrap'}, el('table', {},
-            el('thead', {}, el('tr', {}, el('th', {}, 'Дата и время'), el('th', {}, 'Документ'), el('th', {}, 'Статус'), el('th', {}, 'Клиент, комментарий'), el('th', {}, 'Состав'))),
+            el('thead', {}, el('tr', {}, el('th', {}, 'Дата и время'), el('th', {}, 'Документ'), el('th', {}, 'Статус'), el('th', {}, 'Клиент, комментарий'), el('th', {class: 'num'}, 'Сумма, ₽'))),
             el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 5, class: 'muted'}, types.length ? 'За эти дни документов выбранных видов нет' : 'За эти дни документов нет'))))));
 }
 

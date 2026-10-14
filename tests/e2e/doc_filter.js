@@ -1,6 +1,6 @@
 // Фильтр документов по виду (#2): поступление, реализация, возврат, списание за октябрь. «Реализация» оставляет
 // только реализацию, добавление «Возврат» - реализацию и возврат, вид сохраняется при смене дат и в адресе,
-// повторный щелчок снимает вид, «Все» сбрасывает фильтр.
+// повторный щелчок снимает вид, «Все» сбрасывает фильтр. В колонке «Сумма» - сумма документа (#12).
 const post = async (path, body) => {
     const res = await fetch('/api/' + path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
     const data = await res.json();
@@ -32,6 +32,15 @@ const all = 'Возврат от покупателя, Поступление и
 
 expect(shown() === all, `без фильтра в списке «${shown()}», ожидалось «${all}»`);
 expect(active() === 'Все', 'без фильтра должна быть выбрана «Все»: ' + active());
+// колонка «Сумма» вместо состава (#12): реализация и возврат по ценам, поступление и списание по
+// себестоимости (её нет - ноль со звёздочкой)
+expect(document.querySelector('thead').textContent.includes('Сумма, ₽') && !document.querySelector('thead').textContent.includes('Состав'),
+    'в заголовке должна быть «Сумма», а не «Состав»: ' + document.querySelector('thead').textContent);
+const sumOf = title => [...document.querySelectorAll('tbody tr')].find(r => r.children[1].textContent.startsWith(title)).lastElementChild.textContent.replace(/\u00a0/g, ' ');
+for (const [title, want] of [['Реализация', '1 350,00'], ['Возврат', '45,00'], ['Поступление', '0,00 *'], ['Списание', '0,00 *']]) {
+    expect(sumOf(title) === want, `сумма «${title}»: ${sumOf(title)}, ожидалось ${want}`);
+}
+log.push('суммы: реализация 1 350,00, возврат 45,00, без себестоимости 0,00 *');
 await step('только реализация', () => btn('Реализация').click(), 'Реализация', 'Реализация');
 await step('реализация и возврат', () => btn('Возврат').click(), 'Возврат от покупателя, Реализация', 'Реализация, Возврат');
 expect(location.hash.includes('types=sale,return'), 'виды не попали в адрес: ' + location.hash);
