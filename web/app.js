@@ -699,7 +699,7 @@ const DOC_TYPES = {
         columns: {qty: true, cost: true},
     },
     sale: {
-        title: 'Реализация', create: 'Новая реализация', comment: 'Комментарий', partner: 'Клиент',
+        title: 'Реализация', create: 'Новая реализация', comment: 'Комментарий', partner: 'Клиент', partnerRequired: true,
         back: () => docsListHash, backTitle: '← Документы', posting: true, fill: true, priceType: true, typedPrices: true,
         columns: {qty: true, price: true, cost: true},
     },
@@ -802,7 +802,7 @@ async function renderDoc(view, id, params) {
         el('option', {value: '', selected: !chosenType}, '— выберите —'),
         priceTypes.map(t => el('option', {value: t.id, selected: t.id === chosenType}, t.name)));
     const partnerId = doc ? doc.partner_id : null;
-    const partner = el('select', {},
+    const partner = el('select', {onchange: () => partner.classList.remove('missing')},
         el('option', {value: '', selected: !partnerId}, '— не выбран —'),
         partners.filter(p => !p.archived || p.id === partnerId).map(p =>
             el('option', {value: p.id, selected: p.id === partnerId}, p.name + (p.archived ? ' (архив)' : ''))));
@@ -1064,6 +1064,13 @@ async function renderDoc(view, id, params) {
     };
 
     const save = async andPost => {
+        // клиент реализации обязателен (сервер тоже проверяет): подсказка до отправки
+        partner.classList.toggle('missing', Boolean(cfg.partnerRequired && !partner.value));
+        if (cfg.partnerRequired && !partner.value) {
+            showMessage('Выберите клиента: в реализации он обязателен');
+            partner.focus();
+            return;
+        }
         const lines = collect();
         if (!lines) {
             return;
@@ -1192,7 +1199,7 @@ async function renderDoc(view, id, params) {
         el('div', {class: 'fields'},
             el('label', {}, 'Дата', dateInput),
             cfg.time === false ? null : el('label', {}, 'Время', timeInput),
-            cfg.partner ? el('label', {}, cfg.partner, partner) : null,
+            cfg.partner ? el('label', {}, cfg.partnerRequired ? cfg.partner + ' *' : cfg.partner, partner) : null,
             cfg.priceType && !cfg.returnOf ? el('label', {}, 'Тип цен', priceType) : null,
             cfg.inventory ? el('label', {}, 'Область', scope) : null,
             el('label', {}, cfg.comment, comment)),

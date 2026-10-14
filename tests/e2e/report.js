@@ -10,10 +10,11 @@ const post = async (path, body) => {
     return data;
 };
 const bread = (await (await fetch('/api/items')).json()).find(i => i.name === 'Батон').id;
+const buyer = (await post('partners', {name: 'Покупатель'})).id;
 const v1 = (await post('price-types', {name: 'Опт'})).id;
 await post(`docs/${(await post('docs', {type: 'prices', date: '2026-10-01', price_type_id: 1, lines: [{item_id: bread, price_kop: 3120}]})).id}/post`);
 await post(`docs/${(await post('docs', {type: 'production', date: '2026-10-10', lines: [{item_id: bread, qty: 40000}]})).id}/post`);
-await post(`docs/${(await post('docs', {type: 'sale', date: '2026-10-12', price_type_id: v1, lines: [{item_id: bread, qty: 30000, price_kop: 4500}]})).id}/post`);
+await post(`docs/${(await post('docs', {type: 'sale', partner_id: buyer, date: '2026-10-12', price_type_id: v1, lines: [{item_id: bread, qty: 30000, price_kop: 4500}]})).id}/post`);
 await post(`docs/${(await post('docs', {type: 'writeoff', date: '2026-10-13', comment: 'брак', lines: [{item_id: bread, qty: 2000}]})).id}/post`);
 
 location.hash = '#/stock?date=2026-10-13';
@@ -23,7 +24,7 @@ await sleep(600);
 location.hash = '#/report?from=2026-10-12&to=2026-10-13';
 await sleep(700);
 const text = document.querySelector('.print-sheet').innerText.replace(/ /g, ' ');
-for (const [what, re] of [['начало', /Остаток на 12\.10\.2026\s+1 248,00/], ['реализация', /Реализация\s+12\.10\.2026 00:00\s+1\s+936,00/],
+for (const [what, re] of [['начало', /Остаток на 12\.10\.2026\s+1 248,00/], ['реализация', /Реализация, Покупатель\s+12\.10\.2026 00:00\s+1\s+936,00/],
     ['списание', /Списание\s+13\.10\.2026 00:00\s+1\s+62,40/], ['расход', /Итого по расходу\s+998,40/], ['конец', /Остаток на 13\.10\.2026\s+249,60/],
     ['документов', /Приложение: 2 документа/]]) {
     expect(re.test(text), `${what}: не найдено в отчёте\n` + text.slice(0, 600));
@@ -38,7 +39,7 @@ select.dispatchEvent(new Event('change'));
 await sleep(700);
 const withPrice = document.querySelector('.print-sheet').innerText.replace(/\u00a0/g, ' ');
 expect(withPrice.includes('Сумма по ценам «Опт», ₽'), 'нет колонки по типу цен');
-expect(/Реализация\s+12\.10\.2026 00:00\s+1\s+936,00\s+0,00/.test(withPrice), 'строка реализации с колонкой «Опт»: ' + withPrice.slice(withPrice.indexOf('Реализация'), withPrice.indexOf('Реализация') + 60));
+expect(/Реализация, Покупатель\s+12\.10\.2026 00:00\s+1\s+936,00\s+0,00/.test(withPrice), 'строка реализации с колонкой «Опт»: ' + withPrice.slice(withPrice.indexOf('Реализация'), withPrice.indexOf('Реализация') + 60));
 expect(document.querySelector('.warnings') && document.querySelector('.warnings').textContent.includes('без цены «Опт»'), 'нет предупреждения о движениях без цены');
 log.push('колонка «Опт» добавлена, батона в «Опт» нет - предупреждение');
 
@@ -57,8 +58,8 @@ await post(`docs/${(await post('docs', {type: 'prices', date: '2026-10-11', pric
 location.hash = `#/report?from=2026-10-12&to=2026-10-13&price_type=${v1}&r=2`;
 await sleep(700);
 const sold = document.querySelector('.print-sheet').innerText.replace(/\u00a0/g, ' ');
-expect(/Переоценка: продано дороже цены\s+12\.10\.2026 00:00\s+\d+\s+0,00\s+150,00/.test(sold), 'нет переоценки при продаже 150,00:\n' + sold.slice(0, 900));
-expect(/Реализация\s+12\.10\.2026 00:00\s+\d+\s+936,00\s+1 350,00/.test(sold), 'реализация по «Опт» должна быть по фактической цене 1 350,00');
+expect(/Переоценка: продано дороже цены, Покупатель\s+12\.10\.2026 00:00\s+\d+\s+0,00\s+150,00/.test(sold), 'нет переоценки при продаже 150,00:\n' + sold.slice(0, 900));
+expect(/Реализация, Покупатель\s+12\.10\.2026 00:00\s+\d+\s+936,00\s+1 350,00/.test(sold), 'реализация по «Опт» должна быть по фактической цене 1 350,00');
 expect(/Остаток на 13\.10\.2026\s+280,00\s+320,00/.test(sold), 'остаток по «Опт» должен быть 8 × 40,00 = 320,00:\n' + sold.slice(-400));
 expect(/Приложение: 3 документа/.test(sold), 'переоценка при продаже не отдельный документ');
 log.push('переоценка при продаже 150,00, остаток по «Опт» 320,00 = 8 × 40,00');

@@ -8,6 +8,7 @@
 #include "errors.hpp"
 #include "fixture.hpp"
 #include "groups.hpp"
+#include "partners.hpp"
 #include "prices.hpp"
 #include "schema.hpp"
 #include "test_util.hpp"
@@ -199,6 +200,9 @@ TEST(Revaluation, CostChangeWithStock) {
     Catalog catalog{db};
     Documents docs{db};
     Prices prices{db};
+    Partner buyer;
+    buyer.name = "Покупатель";
+    auto const buyer_id = Partners{db}.create(buyer);
     Item i;
     i.name = "Батон";
     i.kind = Kind::PRODUCT;
@@ -224,6 +228,7 @@ TEST(Revaluation, CostChangeWithStock) {
         d.date = date;
         d.time = "15:00";
         d.price_type_id = type == DocType::SALE ? std::optional<std::int64_t>{prices.create_type("Опт " + date)} : std::nullopt;
+        d.partner_id = type == DocType::SALE ? std::optional<std::int64_t>{buyer_id} : std::nullopt;
         DocLine l;
         l.item_id = bread;
         l.qty = qty;
@@ -302,6 +307,9 @@ TEST(Revaluation, ReturnAfterRevaluation) {
     Catalog catalog{db};
     Documents docs{db};
     Prices prices{db};
+    Partner buyer;
+    buyer.name = "Покупатель";
+    auto const buyer_id = Partners{db}.create(buyer);
     Item i;
     i.name = "Батон";
     i.kind = Kind::PRODUCT;
@@ -322,6 +330,7 @@ TEST(Revaluation, ReturnAfterRevaluation) {
             d.price_type_id = COST_PRICE_TYPE;
         } else if (type == DocType::SALE) {
             d.price_type_id = opt;
+            d.partner_id = buyer_id;
         }
         return d;
     };

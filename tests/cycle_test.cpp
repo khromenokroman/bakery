@@ -87,6 +87,7 @@ class CycleTest : public DbFixture {
         }
         if (type == DocType::SALE) {
             d.price_type_id = m_retail;
+            d.partner_id = m_buyer;
         }
         return d;
     }

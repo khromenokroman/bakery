@@ -520,6 +520,9 @@ void Documents::validate(Document const &doc, std::vector<std::int64_t> const &o
         }
         (void)Prices{m_db}.type(*doc.price_type_id);
     }
+    if (doc.type == DocType::SALE && !doc.partner_id) {
+        throw UserError("не выбран клиент: в реализации он обязателен");
+    }
     if (doc.partner_id) {
         (void)Partners{m_db}.get(*doc.partner_id);
     }

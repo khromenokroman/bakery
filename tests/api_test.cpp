@@ -501,11 +501,19 @@ TEST(ApiReturns, ReturnableAndReturn) {
     auto id = CALL(srv, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-11"}, {"lines", {{{"item_id", bread}, {"qty", 40000}}}}})
                   .body.at("id");
     CALL(srv, "POST", "/api/docs/" + id.dump() + "/post");
-    auto const sale =
-        CALL(
-            srv, "POST", "/api/docs",
-            {{"type", "sale"}, {"date", "2026-10-12"}, {"price_type_id", v1}, {"lines", {{{"item_id", bread}, {"qty", 30000}, {"price_kop", 4500}}}}})
-            .body.at("id");
+    auto const shop = CALL(srv, "POST", "/api/partners", {{"name", "Колосок"}}).body.at("id");
+    auto const no_partner = CALL(
+        srv, "POST", "/api/docs",
+        {{"type", "sale"}, {"date", "2026-10-12"}, {"price_type_id", v1}, {"lines", {{{"item_id", bread}, {"qty", 30000}, {"price_kop", 4500}}}}});
+    EXPECT_EQ(no_partner.status, 400) << "реализация без клиента: " << no_partner.body;
+    EXPECT_THAT(no_partner.body.value("error", ""), HasSubstr("не выбран клиент"));
+    auto const sale = CALL(srv, "POST", "/api/docs",
+                           {{"type", "sale"},
+                            {"date", "2026-10-12"},
+                            {"price_type_id", v1},
+                            {"partner_id", shop},
+                            {"lines", {{{"item_id", bread}, {"qty", 30000}, {"price_kop", 4500}}}}})
+                          .body.at("id");
     CALL(srv, "POST", "/api/docs/" + sale.dump() + "/post");
 
     auto r = CALL(srv, "GET", "/api/docs/" + sale.dump() + "/returnable");

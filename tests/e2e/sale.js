@@ -1,6 +1,7 @@
 // Реализация: тип цен «Вариант 1» (батон 45,00, торта нет), себестоимость батона 31,20, на складе 50 батонов
 // и 5 кг торта. Заполнить по заявкам (45 батонов, 5 кг торта), провести без цены торта - отказ; ввести
 // цену торта 700, поправить батон на 44 (ручная цена подсвечена), провести; проверить суммы и остаток.
+// Без клиента реализация не сохраняется (#11): поле подсвечено, подсказка.
 const post = async (path, body) => {
     const res = await fetch('/api/' + path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
     const data = await res.json();
@@ -13,6 +14,7 @@ const v1 = (await post('price-types', {name: 'Вариант 1'})).id;
 await post(`docs/${(await post('docs', {type: 'prices', date: '2026-10-10', price_type_id: v1, lines: [{item_id: id('Батон'), price_kop: 4500}]})).id}/post`);
 await post(`docs/${(await post('docs', {type: 'prices', date: '2026-10-10', price_type_id: 1, lines: [{item_id: id('Батон'), price_kop: 3120}]})).id}/post`);
 await post(`docs/${(await post('docs', {type: 'production', date: '2026-10-11', lines: [{item_id: id('Батон'), qty: 50000}, {item_id: id('Торт'), qty: 5000}]})).id}/post`);
+const shop = (await post('partners', {name: 'Колосок'})).id;
 location.hash = '#/docs/new?type=sale&date=2026-10-12';
 await sleep(800);
 
@@ -30,6 +32,16 @@ expect(rowOf('Батон').querySelector('input.money').value === '45,00', 'це
 expect(rowOf('Торт').querySelector('input.money').classList.contains('missing'), 'торт без цены не подсвечен');
 const totalsText = () => document.querySelector('.totals').textContent.replace(/ /g, ' ');
 expect(totalsText().includes('без цены строк: 1'), 'итоги: ' + totalsText());
+
+btn('Сохранить и провести').click();
+await sleep(500);
+const partnerSelect = field('Клиент');
+expect(document.getElementById('message').textContent.includes('Выберите клиента') && partnerSelect.classList.contains('missing'),
+    'без клиента реализация не должна сохраняться: ' + document.getElementById('message').textContent);
+expect(location.hash.includes('new'), 'документ без клиента не должен создаться');
+log.push('без клиента: ' + document.getElementById('message').textContent);
+partnerSelect.value = String(shop);
+partnerSelect.dispatchEvent(new Event('change'));
 
 btn('Сохранить и провести').click();
 await sleep(900);

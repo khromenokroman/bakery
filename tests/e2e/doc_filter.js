@@ -8,9 +8,10 @@ const post = async (path, body) => {
     return data;
 };
 const bread = (await (await fetch('/api/items')).json()).find(i => i.name === 'Батон').id;
+const buyer = (await post('partners', {name: 'Покупатель'})).id;
 const v1 = (await post('price-types', {name: 'Вариант 1'})).id;
 await post(`docs/${(await post('docs', {type: 'production', date: '2026-10-11', lines: [{item_id: bread, qty: 40000}]})).id}/post`);
-const sale = await post('docs', {type: 'sale', date: '2026-10-12', price_type_id: v1, lines: [{item_id: bread, qty: 30000, price_kop: 4500}]});
+const sale = await post('docs', {type: 'sale', partner_id: buyer, date: '2026-10-12', price_type_id: v1, lines: [{item_id: bread, qty: 30000, price_kop: 4500}]});
 await post(`docs/${sale.id}/post`);
 await post('docs', {type: 'return', date: '2026-10-13', base_id: sale.id, lines: [{item_id: bread, qty: 1000}]});
 await post('docs', {type: 'writeoff', date: '2026-10-13', comment: 'брак', lines: [{item_id: bread, qty: 1000}]});

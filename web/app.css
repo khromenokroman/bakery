@@ -201,6 +201,7 @@ input.money.manual {
     background: #fff6e0;
 }
 
+select.missing,
 input.money.missing {
     border-color: var(--error-fg);
     background: var(--error-bg);

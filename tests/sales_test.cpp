@@ -46,6 +46,7 @@ class SalesTest : public DbFixture {
         d.type = DocType::SALE;
         d.date = date;
         d.price_type_id = m_v1;
+        d.partner_id = m_buyer;
         for (auto const &[item, qty, price] : lines) {
             DocLine l;
             l.item_id = item;
@@ -151,6 +152,23 @@ TEST_F(SalesTest, PriceTypeRequired) {
 }
 
 /**
+ * @brief Реализация без клиента не сохраняется ни при создании, ни при изменении (#11); в заявке клиент необязателен.
+ */
+TEST_F(SalesTest, PartnerRequired) {
+    auto s = sale("2026-10-12", {{m_bread, 1000, 4500}});
+    s.partner_id.reset();
+    EXPECT_THROW_REASON(m_docs.create(s), UserError, "не выбран клиент");
+    s.partner_id = m_buyer;
+    auto const id = m_docs.create(s);
+    auto without = m_docs.get(id);
+    without.partner_id.reset();
+    EXPECT_THROW_REASON(m_docs.update(without), UserError, "не выбран клиент");
+    EXPECT_EQ(m_docs.get(id).partner_id, m_buyer) << "при отказе клиент остаётся";
+    auto order = make_order("2026-10-12", {{m_bread, 1000}});
+    EXPECT_NO_THROW(m_docs.create(order)) << "в заявке клиент необязателен";
+}
+
+/**
  * @brief Клиент в заявке и реализации: имя в документе, архивного выбрать нельзя, в поступлении клиента нет.
  */
 TEST_F(SalesTest, Partners) {
@@ -184,6 +202,6 @@ TEST_F(SalesTest, Partners) {
     auto same = order;
     same.id = order_id;
     EXPECT_NO_THROW(m_docs.update(same)) << "в документе, где клиент уже был, архив не мешает";
-    EXPECT_EQ(m_partners.list(false).size(), 0U);
-    EXPECT_EQ(m_partners.list(true).size(), 1U);
+    EXPECT_EQ(m_partners.list(false).size(), 1U) << "остался только покупатель из DbFixture";
+    EXPECT_EQ(m_partners.list(true).size(), 2U) << "с архивным «Колосок»";
 }

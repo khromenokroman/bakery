@@ -12,11 +12,12 @@ const post = async (path, body) => {
 };
 const items = await (await fetch('/api/items')).json();
 const bread = items.find(i => i.name === 'Батон').id;
+const buyer = (await post('partners', {name: 'Покупатель'})).id;
 const opt = (await post('price-types', {name: 'Опт'})).id;
 const prod = (await post('docs', {type: 'production', date: '2026-10-10', time: '08:00', lines: [{item_id: bread, qty: 40000}]})).id;
 await post(`docs/${prod}/post`);
 await post(`docs/${(await post('docs', {type: 'inventory', date: '2026-10-10', time: '20:00', lines: [{item_id: bread, qty: 38000}]})).id}/post`);
-await post(`docs/${(await post('docs', {type: 'sale', date: '2026-10-10', time: '21:00', price_type_id: opt, lines: [{item_id: bread, qty: 30000, price_kop: 4500}]})).id}/post`);
+await post(`docs/${(await post('docs', {type: 'sale', partner_id: buyer, date: '2026-10-10', time: '21:00', price_type_id: opt, lines: [{item_id: bread, qty: 30000, price_kop: 4500}]})).id}/post`);
 const banner = document.getElementById('repost-banner');
 expect(banner.hidden, 'документы проведены по порядку, предупреждения быть не должно');
 
@@ -32,7 +33,7 @@ expect(banner.textContent.includes('Поступление из производ
     'предупреждение: ' + banner.textContent);
 log.push(banner.textContent);
 
-const late = (await post('docs', {type: 'sale', date: '2026-10-10', time: '22:00', price_type_id: opt, lines: [{item_id: bread, qty: 15000, price_kop: 4500}]})).id;
+const late = (await post('docs', {type: 'sale', partner_id: buyer, date: '2026-10-10', time: '22:00', price_type_id: opt, lines: [{item_id: bread, qty: 15000, price_kop: 4500}]})).id;
 await post(`docs/${late}/post`);
 
 banner.querySelector('a[href="#/repost"]').click();
