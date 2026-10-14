@@ -339,3 +339,103 @@ TEST(Revaluation, ReturnAfterRevaluation) {
     EXPECT_EQ(r.out_sum, 5000);
     EXPECT_EQ(r.closing_sum, 20000) << "10 шт × 20,00";
 }
+
+namespace {
+
+/**
+ * @brief 10 шт по себестоимости 10,00, розница 20,00; 02.10 поступление.
+ */
+class SaleRevaluationTest : public DbFixture {
+   protected:
+    SaleRevaluationTest() : m_item{add("Батон", Kind::PRODUCT, Unit::PCS)}, m_retail{Prices{m_db}.create_type("Розница")} {
+        set_price(COST_PRICE_TYPE, 1000);
+        set_price(m_retail, 2000);
+        m_docs.post(m_docs.create(make_doc(DocType::PRODUCTION, "2026-10-02", {{m_item, 10000}})));
+    }
+
+    void set_price(std::int64_t type, std::int64_t kop) {
+        auto d = make_doc(DocType::PRICES, "2026-10-01", {{m_item, 0}});
+        d.price_type_id = type;
+        d.lines[0].price_kop = kop;
+        m_docs.post(m_docs.create(d));
+    }
+
+    /// Реализация 03.10 по розничному типу: {количество в тысячных, цена в копейках}.
+    void sell(std::vector<std::pair<std::int64_t, std::int64_t>> const &lines) {
+        auto d = make_doc(DocType::SALE, "2026-10-03", {});
+        d.price_type_id = m_retail;
+        for (auto const &[qty, price] : lines) {
+            DocLine l;
+            l.item_id = m_item;
+            l.qty = qty;
+            l.price_kop = price;
+            d.lines.push_back(l);
+        }
+        m_docs.post(m_docs.create(d));
+    }
+
+    std::int64_t m_item;
+    std::int64_t m_retail;
+};
+
+} // namespace
+
+/**
+ * @brief Продано всё по 15,00 при рознице 20,00: по рознице расход - реализация 150,00 по фактической цене
+ * и переоценка 50,00; остаток 200 - 150 - 50 = 0. По себестоимости списано 100,00 без переоценки.
+ */
+TEST_F(SaleRevaluationTest, SoldCheaper) {
+    sell({{10000, 1500}});
+    auto const r = goods_report(m_db, "2026-10-03", "2026-10-03", std::nullopt, m_retail);
+    EXPECT_EQ(r.opening_sum, 10000);
+    EXPECT_EQ(r.opening_price_sum, 20000);
+    ASSERT_EQ(r.outgoing.size(), 2U) << "реализация и переоценка при продаже";
+    EXPECT_FALSE(r.outgoing[0].revaluation);
+    EXPECT_EQ(r.outgoing[0].sum, 10000) << "по себестоимости";
+    EXPECT_EQ(r.outgoing[0].price_sum, 15000) << "по рознице - фактическая сумма продажи";
+    EXPECT_TRUE(r.outgoing[1].revaluation);
+    EXPECT_EQ(r.outgoing[1].type, DocType::SALE);
+    EXPECT_EQ(r.outgoing[1].sum, 0) << "себестоимость переоценкой при продаже не меняется";
+    EXPECT_EQ(r.outgoing[1].price_sum, 5000) << "10 × (20 - 15)";
+    EXPECT_TRUE(r.incoming.empty());
+    EXPECT_EQ(r.closing_sum, 0);
+    EXPECT_EQ(r.closing_price_sum, 0) << "200 - 150 - 50";
+}
+
+/**
+ * @brief Продано всё по 25,00: переоценка 50,00 в приход, реализация 250,00 в расход, остаток 0.
+ */
+TEST_F(SaleRevaluationTest, SoldDearer) {
+    sell({{10000, 2500}});
+    auto const r = goods_report(m_db, "2026-10-03", "2026-10-03", std::nullopt, m_retail);
+    ASSERT_EQ(r.incoming.size(), 1U);
+    EXPECT_TRUE(r.incoming[0].revaluation);
+    EXPECT_EQ(r.incoming[0].price_sum, 5000) << "10 × (25 - 20)";
+    ASSERT_EQ(r.outgoing.size(), 1U);
+    EXPECT_EQ(r.outgoing[0].price_sum, 25000);
+    EXPECT_EQ(r.closing_price_sum, 0) << "200 + 50 - 250";
+}
+
+/**
+ * @brief Три реализации: по рознице, дороже и дешевле - переоценка в приход и в расход только у двух
+ * последних; остаток по рознице - количество × 20,00. Без типа цен переоценок при продаже нет.
+ */
+TEST_F(SaleRevaluationTest, MixedAndRemainder) {
+    sell({{3000, 2000}});
+    sell({{2000, 2600}});
+    sell({{1500, 1800}});
+    auto const r = goods_report(m_db, "2026-10-03", "2026-10-03", std::nullopt, m_retail);
+    ASSERT_EQ(r.incoming.size(), 1U);
+    EXPECT_EQ(r.incoming[0].price_sum, 1200) << "2 × (26 - 20)";
+    ASSERT_EQ(r.outgoing.size(), 4U) << "три реализации и переоценка третьей";
+    EXPECT_EQ(r.outgoing[0].price_sum, 6000) << "по рознице: переоценки нет";
+    EXPECT_EQ(r.outgoing[1].price_sum, 5200) << "2 × 26";
+    EXPECT_EQ(r.outgoing[2].price_sum, 2700) << "1,5 × 18";
+    EXPECT_TRUE(r.outgoing[3].revaluation);
+    EXPECT_EQ(r.outgoing[3].price_sum, 300) << "1,5 × (20 - 18)";
+    EXPECT_EQ(r.closing_price_sum, 3500 * 2000 / 1000) << "остаток 3,5 шт × 20,00 = 70,00";
+
+    auto const plain = goods_report(m_db, "2026-10-03", "2026-10-03");
+    EXPECT_EQ(plain.outgoing.size(), 3U) << "без типа цен только реализации";
+    EXPECT_TRUE(plain.incoming.empty());
+}

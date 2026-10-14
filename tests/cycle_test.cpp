@@ -57,6 +57,12 @@ struct State {
  * | 10  | 08.10 20:00 | инвентаризация: батон 14 (-1), печенье 2,6 (+0,1)|  14  |  2,6    |  558    | 1460    |
  * | 11  | 09.10 10:00 | возврат по шагу 3: батон 10                     |   24  |  2,6    |  678    | 1760    |
  * | 12  | 10.10 08:00 | поступление: батон 50                           |   74  |  2,6    | 1278    | 3260    |
+ * | 13  | 11.10 12:00 | реализация: батон 10 по 20 (розница 30, -100)    |   64  |  2,6    | 1158    | 2960    |
+ * | 14  | 11.10 15:00 | реализация: батон 4 по 35 (+20), печенье 0,6     |   60  |  2,0    | 1020    | 2600    |
+ * |     |             | по 375,50 (розница 400, -14,70)                 |       |         |         |         |
+ *
+ * Продавец вправе менять цену в реализации: шаги 13 и 14 продают не по рознице. Остаток по рознице всё
+ * равно количество × розничная цена, а в отчёте разница идёт переоценкой при продаже.
  */
 class CycleTest : public DbFixture {
    protected:
@@ -141,6 +147,12 @@ class CycleTest : public DbFixture {
             [this] {
                 m_production2 = post(make(DocType::PRODUCTION, "2026-10-10", "08:00", {{m_bread, 50000}}));
             },
+            [this] {
+                m_cheaper = post(make(DocType::SALE, "2026-10-11", "12:00", {{m_bread, 10000, 2000}}));
+            },
+            [this] {
+                m_mixed = post(make(DocType::SALE, "2026-10-11", "15:00", {{m_bread, 4000, 3500}, {m_cookie, 600, 37550}}));
+            },
         };
     }
 
@@ -159,11 +171,13 @@ class CycleTest : public DbFixture {
             {14000, 2600, 55800, 146000},
             {24000, 2600, 67800, 176000},
             {74000, 2600, 127800, 326000},
+            {64000, 2600, 115800, 296000},
+            {60000, 2000, 102000, 260000},
         };
     }
 
     /// Последний день цикла: на его конец проверяется итоговое состояние.
-    static constexpr char const *LAST_DAY = "2026-10-10";
+    static constexpr char const *LAST_DAY = "2026-10-11";
 
     /// Проводит весь цикл.
     void run_cycle() {
@@ -259,6 +273,8 @@ class CycleTest : public DbFixture {
     std::int64_t m_inventory{};
     std::int64_t m_return{};
     std::int64_t m_production2{};
+    std::int64_t m_cheaper{}; ///< реализация дешевле розницы
+    std::int64_t m_mixed{};   ///< реализация: батон дороже розницы, печенье дешевле
 };
 
 } // namespace
@@ -276,9 +292,10 @@ TEST_F(CycleTest, StepByStep) {
     for (std::size_t i = 0; i < all.size(); ++i) {
         SCOPED_TRACE("шаг " + std::to_string(i + 1));
         ASSERT_NO_THROW(all[i]());
-        // шаги 1-12 приходятся на 01.10-10.10, по два шага на 02.10 и 04.10
-        static constexpr char const *DAYS[] = {"2026-10-01", "2026-10-02", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-04",
-                                               "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10"};
+        // шаги 1-14 приходятся на 01.10-11.10, по два шага на 02.10, 04.10 и 11.10
+        static constexpr char const *DAYS[] = {"2026-10-01", "2026-10-02", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-04", "2026-10-05",
+                                               "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11", "2026-10-11"};
+        static_assert(std::size(DAYS) == 14);
         std::string const day = DAYS[i];
         expect_state(day, want[i]);
         if (!prev_day.empty() && prev_day != day) {
@@ -314,29 +331,35 @@ TEST_F(CycleTest, LineCosts) {
  * себестоимости и рознице.
  *
  * Приход по себестоимости 2 805,00: поступление 2 000, переоценка батона 70, излишек печенья 15,
- * возврат 120, поступление 600. Расход 1 527,00: реализация 1 000, списания 50 и 100, переоценка
- * печенья 125, реализация 240, недостача батона 12. Конец 1 278,00.
+ * возврат 120, поступление 600. Расход 1 785,00: реализация 1 000, списания 50 и 100, переоценка
+ * печенья 125, реализация 240, недостача батона 12, реализации 120 и 138. Конец 1 020,00.
+ *
+ * По рознице реализация списывается по фактической цене, разница с розницей - переоценка при продаже:
+ * шаг 13 дешевле (расход 100), шаг 14 батон дороже (приход 20) и печенье дешевле (расход 14,70).
+ * Конец по рознице 2 600,00 = 60 × 30 + 2 × 400.
  */
 TEST_F(CycleTest, Report) {
     run_cycle();
     auto const r = goods_report(m_db, "2026-10-01", LAST_DAY, std::nullopt, m_retail);
     EXPECT_EQ(r.in_sum, 280500);
-    EXPECT_EQ(r.out_sum, 152700);
-    EXPECT_EQ(r.closing_sum, 127800);
-    EXPECT_EQ(r.in_price_sum, 651500);
-    EXPECT_EQ(r.out_price_sum, 325500);
-    EXPECT_EQ(r.closing_price_sum, 326000);
+    EXPECT_EQ(r.out_sum, 178500);
+    EXPECT_EQ(r.closing_sum, 102000);
+    EXPECT_EQ(r.in_price_sum, 653500);
+    EXPECT_EQ(r.out_price_sum, 393500);
+    EXPECT_EQ(r.closing_price_sum, 260000);
 
     struct Row {
         DocType type;
         std::int64_t sum;
         std::int64_t price_sum;
+        bool revaluation = false;
     };
     auto const check = [](std::vector<ReportDoc> const &got, std::vector<Row> const &want, char const *what) {
         ASSERT_EQ(got.size(), want.size()) << what;
         for (std::size_t i = 0; i < want.size(); ++i) {
             SCOPED_TRACE(std::string(what) + ", строка " + std::to_string(i + 1) + " (" + got[i].date + " " + got[i].time + ")");
             EXPECT_EQ(got[i].type, want[i].type);
+            EXPECT_EQ(got[i].revaluation, want[i].revaluation) << "переоценка при продаже";
             EXPECT_EQ(got[i].sum, want[i].sum) << "по себестоимости";
             EXPECT_EQ(got[i].price_sum, want[i].price_sum) << "по рознице";
         }
@@ -349,6 +372,7 @@ TEST_F(CycleTest, Report) {
               {DocType::INVENTORY, 1500, 4000}, // излишек печенья 0,1 кг
               {DocType::RETURN, 12000, 30000},  // 10 шт: по рознице на момент возврата
               {DocType::PRODUCTION, 60000, 150000},
+              {DocType::SALE, 0, 2000, true}, // батон 4 шт продан по 35 при рознице 30
           },
           "приход");
     check(r.outgoing,
@@ -359,12 +383,16 @@ TEST_F(CycleTest, Report) {
               {DocType::PRICES, 12500, 0}, // себестоимость печенья 200 -> 150, 2,5 кг
               {DocType::SALE, 24000, 60000},
               {DocType::INVENTORY, 1200, 3000}, // недостача батона 1 шт
+              {DocType::SALE, 12000, 20000},    // 10 шт по фактической цене 20
+              {DocType::SALE, 0, 10000, true},  // переоценка: розница 30, продано по 20
+              {DocType::SALE, 13800, 36530},    // батон 4 × 35 + печенье 0,6 × 375,50
+              {DocType::SALE, 0, 1470, true},   // переоценка печенья: 0,6 × (400 - 375,50)
           },
           "расход");
 
     auto const plain = goods_report(m_db, "2026-10-01", LAST_DAY);
     EXPECT_EQ(plain.incoming.size(), 5U) << "без типа цен переоценки розницы нет";
-    EXPECT_EQ(plain.closing_sum, 127800);
+    EXPECT_EQ(plain.closing_sum, 102000);
 
     auto const tail = goods_report(m_db, "2026-10-04", "2026-10-07", std::nullopt, m_retail);
     EXPECT_EQ(tail.opening_sum, 95000) << "конец 03.10";
@@ -417,6 +445,10 @@ TEST_F(CycleTest, UnpostAndRepost) {
     auto const want = expected();
     auto const report_before = goods_report(m_db, "2026-10-01", LAST_DAY, std::nullopt, m_retail);
 
+    m_docs.unpost(m_mixed);
+    expect_state(LAST_DAY, want[12]);
+    m_docs.unpost(m_cheaper);
+    expect_state(LAST_DAY, want[11]);
     m_docs.unpost(m_production2);
     expect_state(LAST_DAY, want[10]);
     m_docs.unpost(m_return);
@@ -433,7 +465,7 @@ TEST_F(CycleTest, UnpostAndRepost) {
         ASSERT_NO_THROW(m_docs.post(m_sale));
     }
 
-    for (auto const id : {m_sale2, m_inventory, m_return, m_production2}) {
+    for (auto const id : {m_sale2, m_inventory, m_return, m_production2, m_cheaper, m_mixed}) {
         ASSERT_NO_THROW(m_docs.post(id)) << "документ " << id;
     }
     expect_state(LAST_DAY, want.back());
@@ -469,8 +501,8 @@ TEST_F(CycleTest, RepostAfterBackdatedChange) {
     ASSERT_TRUE(state.from) << "после правки задним числом нужна отметка";
     EXPECT_EQ(state.from->moment, "2026-10-02 08:00:00");
     EXPECT_EQ(state.cause_id, m_production);
-    EXPECT_EQ(Reposter{m_db}.count(state.from->moment), 8)
-        << "2 поступления, 2 реализации, 2 списания, инвентаризация, возврат; установки цен не перепроводятся";
+    EXPECT_EQ(Reposter{m_db}.count(state.from->moment), 10)
+        << "2 поступления, 4 реализации, 2 списания, инвентаризация, возврат; установки цен не перепроводятся";
 
     auto const last = repost_all(state.from->moment);
     EXPECT_FALSE(last.error) << *last.error;
@@ -537,7 +569,7 @@ TEST_F(CycleTest, RepostAfterCostFix) {
     EXPECT_EQ(line(m_production, m_bread).first, 1000) << "до 04.10 себестоимость прежняя";
     EXPECT_FALSE(needed());
     auto const r = goods_report(m_db, "2026-10-01", LAST_DAY);
-    EXPECT_EQ(r.closing_sum, 74 * 1300 + 39000) << "74 батона × 13,00 + 2,6 кг печенья × 150,00";
+    EXPECT_EQ(r.closing_sum, 60 * 1300 + 30000) << "60 батонов × 13,00 + 2 кг печенья × 150,00";
 }
 
 /**

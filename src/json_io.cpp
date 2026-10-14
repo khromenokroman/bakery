@@ -314,6 +314,8 @@ nlohmann::json to_json(GoodsReport const &report) {
                 {"partner_name", d.partner_name},
                 {"sum", d.sum},
                 {"price_sum", d.price_sum},
+                {"revaluation", d.revaluation},
+                {"incoming", d.incoming},
             });
         }
         return out;

@@ -22,6 +22,12 @@ constexpr char const PRICE_AT_MOVE[] =
     "AND pd.status = 'posted' AND pd.price_type_id = ?4 AND pl.item_id = m.item_id AND pd.date <= m.date "
     "ORDER BY pd.date DESC, pd.id DESC LIMIT 1)";
 
+/// Цена в строке документа движения m (для реализации - цена продажи).
+constexpr char const LINE_PRICE[] = "(SELECT l.price_kop FROM doc_lines l WHERE l.doc_id = m.doc_id AND l.item_id = m.item_id LIMIT 1)";
+
+/// Движение реализации, у которого есть и цена продажи, и цена типа: оценивается по цене продажи.
+constexpr char const SOLD_AT_LINE[] = "d.type = 'sale' AND x.lp IS NOT NULL AND x.tp IS NOT NULL";
+
 /// Тысячные доли копейки -> копейки, половина от нуля: деление в C++ отбрасывает дробь к нулю.
 std::int64_t to_kop(std::int64_t milli) { return (milli >= 0 ? milli + 500 : milli - 500) / 1000; }
 
@@ -222,21 +228,25 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
         report.moves_without_price = without;
     }
 
-    // документы периода с суммами по себестоимости и по типу цен
+    // документы периода с суммами по себестоимости и по типу цен: tp - цена типа на момент движения,
+    // lp - цена в строке документа; реализация по типу цен - по цене продажи, разница - переоценка
+    std::string const line = price_type ? LINE_PRICE : "NULL";
     auto docs = db.prepare(
-        "SELECT d.id, d.type, d.number, d.date, coalesce(p.name, ''), sum(m.qty * coalesce(m.cost_kop, 0)), m.qty > 0, "
-        "coalesce(sum(m.qty * coalesce(" +
-        price + ", 0)), 0), coalesce(sum(" + price +
-        " IS NULL), 0)"
-        " FROM stock_moves m JOIN docs d ON d.id = m.doc_id JOIN items i ON i.id = m.item_id"
-        " LEFT JOIN partners p ON p.id = d.partner_id"
-        " WHERE m.date >= ?1 AND m.date <= ?2 AND " +
-        std::string(IN_GROUP) + " GROUP BY d.id, m.qty > 0 ORDER BY d.date, d.id");
+        "SELECT d.id, d.type, d.number, d.date, coalesce(p.name, ''), sum(x.qty * coalesce(x.cost_kop, 0)), x.qty > 0, "
+        "coalesce(sum(x.qty * coalesce(CASE WHEN " +
+        std::string(SOLD_AT_LINE) + " THEN x.lp ELSE x.tp END, 0)), 0), coalesce(sum(x.tp IS NULL), 0), coalesce(sum(CASE WHEN " + SOLD_AT_LINE +
+        " AND x.lp > x.tp THEN -x.qty * (x.lp - x.tp) END), 0), coalesce(sum(CASE WHEN " + SOLD_AT_LINE +
+        " AND x.lp < x.tp THEN x.qty * (x.lp - x.tp) END), 0)"
+        " FROM (SELECT m.doc_id, m.qty, m.cost_kop, " +
+        price + " AS tp, " + line + " AS lp FROM stock_moves m JOIN items i ON i.id = m.item_id WHERE m.date >= ?1 AND m.date <= ?2 AND " +
+        std::string(IN_GROUP) +
+        ") x JOIN docs d ON d.id = x.doc_id LEFT JOIN partners p ON p.id = d.partner_id GROUP BY d.id, x.qty > 0 ORDER BY d.date, d.id");
     docs.bind(1, begin).bind(2, end);
     bind_group(docs, group);
     if (price_type) {
         docs.bind(4, *price_type);
     }
+    std::vector<ReportDoc> sale_revaluations;
     while (docs.step()) {
         ReportDoc d;
         d.id = docs.column_int(0);
@@ -256,6 +266,17 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
         if (price_type) {
             report.moves_without_price += docs.column_int(8);
         }
+        // продано дороже цены типа - переоценка в приход, дешевле - в расход; отдельными строками
+        for (auto const [column, incoming] : {std::pair{9, true}, std::pair{10, false}}) {
+            if (auto const diff = docs.column_int(column); diff != 0) {
+                ReportDoc r = d;
+                r.revaluation = true;
+                r.incoming = incoming;
+                r.sum = 0;
+                r.price_sum = to_kop(diff);
+                sale_revaluations.push_back(std::move(r));
+            }
+        }
         if (d.incoming) {
             report.in_sum += d.sum;
             report.in_price_sum += d.price_sum;
@@ -264,6 +285,15 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
             report.out_sum += d.sum;
             report.out_price_sum += d.price_sum;
             report.outgoing.push_back(std::move(d));
+        }
+    }
+    for (auto &r : sale_revaluations) {
+        if (r.incoming) {
+            report.in_price_sum += r.price_sum;
+            report.incoming.push_back(std::move(r));
+        } else {
+            report.out_price_sum += r.price_sum;
+            report.outgoing.push_back(std::move(r));
         }
     }
     // остаток на конец по арифметике отчёта, чтобы начало + приход - расход сходилось до копейки
@@ -298,7 +328,9 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
             report.outgoing.push_back(std::move(d));
         }
     }
-    auto const chronological = [](ReportDoc const &a, ReportDoc const &b) { return std::tie(a.date, a.time, a.id) < std::tie(b.date, b.time, b.id); };
+    auto const chronological = [](ReportDoc const &a, ReportDoc const &b) {
+        return std::tie(a.date, a.time, a.id, a.revaluation) < std::tie(b.date, b.time, b.id, b.revaluation);
+    };
     std::sort(report.incoming.begin(), report.incoming.end(), chronological);
     std::sort(report.outgoing.begin(), report.outgoing.end(), chronological);
 
