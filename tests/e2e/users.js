@@ -1,6 +1,6 @@
 // Пользователи (#9): без входа - форма входа; неверный пароль - ошибка; администратор входит, видит
 // «Пользователи» и добавляет продавца Ольгу. Ольга входит: нет «Пользователей» и «Организации», номенклатура
-// только для просмотра, установку цен не создать; созданное ей поступление показывает автора. Ольга меняет
+// только для просмотра, раздела «Цены» и установок цен нет; созданное ей поступление показывает автора. Ольга меняет
 // пароль и входит с новым.
 const message = () => document.getElementById('message').textContent;
 const navText = () => [...document.querySelectorAll('nav a')].filter(a => !a.hidden).map(a => a.textContent).join(',');
@@ -40,7 +40,7 @@ log.push('добавлен продавец olga');
 
 await logout();
 await login('olga', 'secret1');
-expect(!navText().includes('Пользователи') && !navText().includes('Организация'), 'у продавца лишние разделы: ' + navText());
+expect(!navText().includes('Пользователи') && !navText().includes('Организация') && !navText().includes('Цены'), 'у продавца лишние разделы: ' + navText());
 location.hash = '#/items';
 await sleep(700);
 expect(!btn('Добавить') && !btn('+ группа'), 'продавец не должен добавлять номенклатуру и группы');
@@ -52,6 +52,14 @@ expect([...document.querySelectorAll('main input')].every(i => i.disabled), 'п�
 location.hash = '#/docs';
 await sleep(700);
 expect(btn('Новое поступление') && !btn('Новая установка цен'), 'продавцу: поступление можно, установку цен нельзя');
+expect(!btn('Установка цен'), 'в фильтре продавца не должно быть установки цен');
+const pricesDoc = await (await fetch('/api/docs?type=prices')).json();
+expect(Array.isArray(pricesDoc) && pricesDoc.length === 0, 'API не должно отдавать продавцу установки цен');
+location.hash = '#/prices';
+await sleep(700);
+expect(message().includes('недостаточно прав'), 'раздел «Цены» по адресу должен отказывать продавцу: ' + message());
+location.hash = '#/docs';
+await sleep(700);
 log.push('продавец: справочники только просмотр, без установки цен');
 
 btn('Новое поступление').click();

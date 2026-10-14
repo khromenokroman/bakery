@@ -144,7 +144,7 @@ Api::Handler Api::guarded(Access access, Handler handler) {
 
 void Api::check_doc_access(DocType type) const {
     if (type == DocType::PRICES && m_user && m_user->role == Role::SELLER) {
-        throw ForbiddenError("недостаточно прав: установку цен ведёт технолог");
+        throw ForbiddenError("недостаточно прав: установки цен ведёт и смотрит технолог");
     }
 }
 
@@ -414,7 +414,10 @@ void Api::register_docs(httplib::Server &server) {
                    }
                    auto out = nlohmann::json::array();
                    for (auto const &doc : m_docs.list(filter)) {
-                       out.push_back(to_json(doc));
+                       // установки цен продавцу не показываются
+                       if (doc.type != DocType::PRICES || m_user->role != Role::SELLER) {
+                           out.push_back(to_json(doc));
+                       }
                    }
                    send_json(res, out);
                }));
@@ -430,8 +433,11 @@ void Api::register_docs(httplib::Server &server) {
                     send_json(res, to_json(m_docs.get(id)), 201);
                 }));
 
-    server.Get("/api/docs/:id",
-               guarded([this](httplib::Request const &req, httplib::Response &res) { send_json(res, to_json(m_docs.get(path_id(req)))); }));
+    server.Get("/api/docs/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto const doc = m_docs.get(path_id(req));
+                   check_doc_access(doc.type);
+                   send_json(res, to_json(doc));
+               }));
 
     server.Put("/api/docs/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
                    auto doc = document_from_json(parse_object(req.body));

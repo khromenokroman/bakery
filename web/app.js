@@ -745,6 +745,9 @@ async function renderDoc(view, id, params) {
         api('GET', 'period'),
     ]);
     const type = doc ? doc.type : (params.get('type') || 'order');
+    if (type === 'prices' && !canManage()) {
+        throw new Error('недостаточно прав: установки цен ведёт и смотрит технолог');
+    }
     const cfg = DOC_TYPES[type];
     if (!cfg) {
         throw new Error('неизвестный вид документа: ' + type);
@@ -753,9 +756,8 @@ async function renderDoc(view, id, params) {
     const posted = doc && doc.status === 'posted';
     // документ в закрытом периоде только для просмотра и печати
     const locked = Boolean(doc && period.closed_till && doc.date <= period.closed_till);
-    // установку цен продавец только смотрит
-    const forbidden = type === 'prices' && !canManage();
-    const editable = !locked && !forbidden;
+
+    const editable = !locked;
     const inDoc = new Set((doc ? doc.lines : []).map(l => l.item_id));
     const candidates = products.filter(p => !p.archived || inDoc.has(p.id));
     const byId = new Map(products.map(p => [p.id, p]));
@@ -1180,7 +1182,6 @@ async function renderDoc(view, id, params) {
                 editable && doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null)),
         locked ? el('p', {class: 'warnings'}, `Период по ${humanDate(period.closed_till).split(',')[0]} закрыт: документ только для просмотра. `,
             el('a', {href: '#/settings'}, 'Закрытие периода')) : null,
-        forbidden && !locked ? el('p', {class: 'warnings'}, 'Установку цен ведёт технолог: документ только для просмотра.') : null,
         doc && doc.created_by ? el('p', {class: 'muted authors'}, `Создал: ${doc.created_by}, ${humanMoment(doc.created_at)}`,
             doc.updated_by && doc.updated_at !== doc.created_at ? `; изменил: ${doc.updated_by}, ${humanMoment(doc.updated_at)}` : '') : null,
         base ? el('p', {},
@@ -1211,11 +1212,11 @@ async function renderDoc(view, id, params) {
                 cols.cost ? el('th', {class: 'num'}, 'Сумма себест., ₽') : null,
                 el('th'))),
             tbody)),
-        cfg.returnOf || !editable ? null : el('div', {class: 'toolbar', style: 'margin-top: 8px'},
+        cfg.returnOf || locked ? null : el('div', {class: 'toolbar', style: 'margin-top: 8px'},
             el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка')),
         totals);
     update();
-    if (!editable) {
+    if (locked) {
         view.querySelectorAll('.fields input, .fields select, tbody input, tbody select, tbody button').forEach(e => { e.disabled = true; });
     }
 }
@@ -1224,24 +1225,26 @@ async function renderDoc(view, id, params) {
 
 // виды в списке документов, порядок кнопок фильтра; заявки живут в своём разделе
 const DOC_FILTER = {production: 'Поступление', sale: 'Реализация', return: 'Возврат', writeoff: 'Списание', inventory: 'Инвентаризация', prices: 'Установка цен'};
-const LIST_DOC_TYPES = Object.keys(DOC_FILTER);
+const ALL_DOC_TYPES = Object.keys(DOC_FILTER);
 
 async function renderDocs(view, params) {
+    // установки цен видит только технолог и администратор
+    const listTypes = ALL_DOC_TYPES.filter(t => t !== 'prices' || canManage());
     // по умолчанию неделя до и после сегодня: документы, оформленные заранее, тоже видны
     const today = isoDate(new Date());
     const from = params.get('from') || shiftDate(today, -7);
     const to = params.get('to') || shiftDate(today, 7);
     // выбранные виды; ни одного - все виды
-    const types = (params.get('types') || '').split(',').filter(t => LIST_DOC_TYPES.includes(t));
+    const types = (params.get('types') || '').split(',').filter(t => listTypes.includes(t));
     docsListHash = location.hash;
-    const docs = await api('GET', `docs?type=${(types.length ? types : LIST_DOC_TYPES).join(',')}&from=${from}&to=${to}`);
+    const docs = await api('GET', `docs?type=${(types.length ? types : listTypes).join(',')}&from=${from}&to=${to}`);
     const go = (f, t, ty) => { location.hash = `#/docs?from=${f}&to=${t}` + (ty.length ? '&types=' + ty.join(',') : ''); };
     const fromInput = el('input', {type: 'date', value: from, onchange: e => e.target.value && go(e.target.value, to, types)});
     const toInput = el('input', {type: 'date', value: to, onchange: e => e.target.value && go(from, e.target.value, types)});
-    const toggle = type => go(from, to, LIST_DOC_TYPES.filter(t => (t === type) !== types.includes(t)));
+    const toggle = type => go(from, to, listTypes.filter(t => (t === type) !== types.includes(t)));
     const typeButtons = el('div', {class: 'tabs toolbar'}, 'вид',
         el('button', {class: types.length ? null : 'active', onclick: () => go(from, to, [])}, 'Все'),
-        LIST_DOC_TYPES.map(t => el('button', {class: types.includes(t) ? 'active' : null, onclick: () => toggle(t)}, DOC_FILTER[t])));
+        listTypes.map(t => el('button', {class: types.includes(t) ? 'active' : null, onclick: () => toggle(t)}, DOC_FILTER[t])));
 
     const rows = docs.slice().reverse().map(doc => el('tr', {class: 'link', onclick: () => { location.hash = '#/docs/' + doc.id; }},
         el('td', {class: 'nowrap'}, humanDate(doc.date).split(',')[0] + ' ' + doc.time),
@@ -1269,6 +1272,9 @@ async function renderDocs(view, params) {
 // ---------- цены ----------
 
 async function renderPrices(view, params) {
+    if (!canManage()) {
+        throw new Error('недостаточно прав: цены ведёт технолог');
+    }
     const types = await api('GET', 'price-types');
     const typeId = Number(params.get('type')) || types[0].id;
     const current = types.find(t => t.id === typeId) || types[0];
@@ -1886,6 +1892,11 @@ function humanMoment(moment) {
 }
 
 /** Предупреждение над страницей, если документы изменены задним числом и нужно перепроведение. */
+/** Ссылка на документ, изменённый задним числом; установку цен продавцу только названием. */
+function causeLink(cause) {
+    return cause.type === 'prices' && !canManage() ? cause.title : el('a', {href: '#/docs/' + cause.id}, cause.title);
+}
+
 async function refreshRepostBanner() {
     const box = document.getElementById('repost-banner');
     try {
@@ -1895,7 +1906,7 @@ async function refreshRepostBanner() {
         if (state.needed) {
             render(box,
                 '⚠ ',
-                state.cause ? ['Документ ', el('a', {href: '#/docs/' + state.cause.id}, state.cause.title), ' изменён задним числом. '] : 'Документы изменены задним числом. ',
+                state.cause ? ['Документ ', causeLink(state.cause), ' изменён задним числом. '] : 'Документы изменены задним числом. ',
                 `Нужно перепровести документы с ${humanMoment(state.from.moment)} (документов: ${state.count}). `,
                 el('a', {href: '#/repost'}, 'Перепровести'));
         }
@@ -2204,7 +2215,7 @@ async function renderUsers(view) {
 
     render(view,
         el('h2', {}, 'Пользователи'),
-        el('p', {class: 'muted'}, 'Продавец: заявки, поступление, реализация, возврат, списание, инвентаризация, клиенты; номенклатуру, цены и остатки только смотрит. ' +
+        el('p', {class: 'muted'}, 'Продавец: заявки, поступление, реализация, возврат, списание, инвентаризация, клиенты; номенклатуру и остатки только смотрит, цен и установок цен не видит. ' +
             'Технолог: всё, кроме пользователей. Администратор: всё. Заблокированный не может войти.'),
         form,
         el('div', {class: 'table-wrap', style: 'margin-top: 12px'}, el('table', {},

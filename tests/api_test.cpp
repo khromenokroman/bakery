@@ -801,7 +801,7 @@ TEST(ApiAuth, LoginRequired) {
 }
 
 /**
- * @brief Права ролей: продавец ведёт документы, кроме установки цен, и клиентов, справочники только читает;
+ * @brief Права ролей: продавец ведёт документы и клиентов, установки цен не видит, справочники только читает;
  * технолог всё, кроме пользователей; пользователями управляет администратор.
  */
 TEST(ApiAuth, Roles) {
@@ -828,7 +828,11 @@ TEST(ApiAuth, Roles) {
               403)
         << "установка цен не продавцу";
     EXPECT_EQ(status_of(seller, "POST", "/api/docs/" + std::to_string(prices) + "/post"), 403) << "провести установку цен";
-    EXPECT_EQ(status_of(seller, "GET", "/api/docs/" + std::to_string(prices)), 200) << "смотреть установку цен можно";
+    EXPECT_EQ(status_of(seller, "GET", "/api/docs/" + std::to_string(prices)), 403) << "установку цен продавец не открывает";
+    auto const listed = seller.Get("/api/docs");
+    ASSERT_TRUE(listed);
+    EXPECT_EQ(nlohmann::json::parse(listed->body).size(), 0U) << "установки цен нет в списке продавца: " << listed->body;
+    EXPECT_EQ(status_of(seller, "GET", "/api/prices?type=1&date=2026-10-01"), 200) << "цены для строк реализации продавцу нужны";
     EXPECT_EQ(
         status_of(seller, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-02"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}}),
         201)
@@ -839,6 +843,9 @@ TEST(ApiAuth, Roles) {
     auto tech = srv.client_as(login_as(srv, "tanya", "secret1"));
     EXPECT_EQ(status_of(tech, "POST", "/api/items", {{"name", "Багет"}, {"kind", "product"}, {"unit", "pcs"}}), 201);
     EXPECT_EQ(status_of(tech, "POST", "/api/docs/" + std::to_string(prices) + "/post"), 200) << "технолог проводит установку цен";
+    auto const tech_list = tech.Get("/api/docs");
+    ASSERT_TRUE(tech_list);
+    EXPECT_EQ(nlohmann::json::parse(tech_list->body).size(), 2U) << "технолог видит и установку цен: " << tech_list->body;
     EXPECT_EQ(status_of(tech, "GET", "/api/users"), 403) << "пользователи только администратору";
     EXPECT_EQ(status_of(tech, "POST", "/api/users", {{"login", "x"}, {"role", "admin"}, {"password", "secret1"}}), 403);
 }

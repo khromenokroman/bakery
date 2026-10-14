@@ -57,7 +57,7 @@ class Api {
     /// То же для любого вошедшего пользователя.
     [[nodiscard]] Handler guarded(Handler handler);
 
-    /// @throws ForbiddenError если продавец меняет документ вида type, который ему не доступен
+    /// @throws ForbiddenError если продавцу не доступен документ вида type (установка цен)
     void check_doc_access(DocType type) const;
 
     void register_auth(httplib::Server &server);
