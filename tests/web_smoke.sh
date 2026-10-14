@@ -73,6 +73,8 @@ base64 -d <<<'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDw
     | curl -sf -X PUT "$API/items/$BREAD/photo" -H 'Content-Type: image/png' -H "Cookie: $ADMIN" --data-binary @- >/dev/null
 call POST users '{"login":"olga","name":"Ольга","role":"seller","password":"secret1"}' >/dev/null
 call POST backups '' >/dev/null
+# незавершённый прогон перепроведения: страница #/repost показывает «Продолжить»
+call POST repost/step '{"date":"2026-10-12","time":"00:00"}' >/dev/null
 SELLER=$(curl -sf -D - -o /dev/null -X POST "$API/auth/login" -H 'Content-Type: application/json' \
     -d '{"login":"olga","password":"secret1"}' | sed -n 's/^Set-Cookie: \([^;]*\).*/\1/Ip')
 

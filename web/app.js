@@ -1932,16 +1932,18 @@ async function renderRepost(view, params) {
                 : 'Перепроводить нечего.'));
         return;
     }
-    const start = state.needed ? state.from.moment : isoDate(new Date()) + ' 00:00:00';
+    // незавершённый прогон хранится на сервере: продолжить его можно после перезагрузки и с другого компьютера
+    const saved = state.run;
+    const start = saved ? saved.from : state.needed ? state.from.moment : isoDate(new Date()) + ' 00:00:00';
     const dateInput = el('input', {type: 'date', value: params.get('date') || start.slice(0, 10)});
     const timeInput = el('input', {type: 'time', value: params.get('time') || start.slice(11, 16)});
     const countText = el('span', {class: 'muted'});
     const status = el('div', {class: 'repost-progress'});
     let running = false;
     let stopRequested = false;
-    let after = null;
-    let epoch = 0;
-    let done = 0;
+    // момент полей ввода совпадает с прогоном на сервере: шаг продолжит его, иначе начнёт новый
+    const moment = () => `${dateInput.value} ${timeInput.value || '00:00'}:00`;
+    const continues = () => Boolean(saved) && moment() === saved.from;
 
     const updateCount = async () => {
         if (!dateInput.value) {
@@ -1950,61 +1952,66 @@ async function renderRepost(view, params) {
         const {count} = await api('GET', `repost/count?date=${dateInput.value}&time=${timeInput.value || '00:00'}`);
         countText.textContent = `документов к перепроведению: ${count}`;
     };
-    dateInput.addEventListener('change', () => { after = null; updateCount().catch(e => showMessage(e.message)); });
-    timeInput.addEventListener('change', () => { after = null; updateCount().catch(e => showMessage(e.message)); });
-
-    const startButton = el('button', {class: 'primary', onclick: () => run()}, 'Перепровести');
+    const startButton = el('button', {class: 'primary', onclick: () => run(false)});
+    const restartButton = el('button', {onclick: () => run(true)}, 'Начать заново');
     const stopButton = el('button', {hidden: true, onclick: () => { stopRequested = true; }}, 'Остановить');
+    const updateButtons = () => {
+        startButton.textContent = continues() ? 'Продолжить' : 'Перепровести';
+        restartButton.hidden = !continues();
+    };
+    const changed = () => { updateButtons(); updateCount().catch(e => showMessage(e.message)); };
+    dateInput.addEventListener('change', changed);
+    timeInput.addEventListener('change', changed);
 
-    const run = async () => {
+    const errorBlock = (doc, text) => [
+        el('div', {class: 'repost-error'}, 'Остановлено на документе ', el('a', {href: '#/docs/' + doc.id}, doc.title), ': ', text),
+        el('p', {class: 'muted'}, 'Исправьте документ или те, что ему мешают, и нажмите «Продолжить»: перепроведение начнётся с него.'),
+    ];
+    if (saved) {
+        render(status,
+            el('div', {class: 'warnings'}, `Перепроведение с ${humanMoment(saved.from)} не закончено: перепроведено ${saved.done}, осталось ${saved.remaining}` +
+                (saved.after && saved.after.title ? `, последним - ${saved.after.title}` : '') + `. Последний шаг ${humanMoment(saved.updated)}.`),
+            saved.error ? errorBlock(saved.error.doc, saved.error.text) : null);
+    }
+
+    const run = async restart => {
         if (running || !dateInput.value) {
             return;
         }
         running = true;
         stopRequested = false;
-        startButton.disabled = dateInput.disabled = timeInput.disabled = true;
+        startButton.disabled = restartButton.disabled = dateInput.disabled = timeInput.disabled = true;
         stopButton.hidden = false;
         showMessage('');
-        if (!after) {
-            done = 0;
-            // номер отметок на начало: если за время работы появится новая правка задним числом,
-            // сервер не снимет предупреждение (и при «Продолжить» тоже)
-            epoch = (await api('GET', 'repost')).epoch;
-        }
-        const body = {date: dateInput.value, time: timeInput.value || '00:00', epoch};
+        const body = {date: dateInput.value, time: timeInput.value || '00:00', restart};
         const bar = el('progress', {max: 1, value: 0});
         const counter = el('div', {});
         const current = el('div', {class: 'muted'});
         render(status, bar, counter, current);
+        let done = 0;
         let finish = null;
         try {
             for (;;) {
                 if (stopRequested) {
-                    finish = () => render(status, el('p', {}, `Остановлено: перепроведено ${done}. «Продолжить» - со следующего документа.`));
+                    finish = () => render(status, el('p', {}, `Остановлено: перепроведено ${done}. «Продолжить» - со следующего документа, в том числе после перезагрузки страницы.`));
                     break;
                 }
-                const step = await api('POST', 'repost/step', {...body, after});
+                const step = await api('POST', 'repost/step', body);
+                body.restart = false;
+                done = step.done;
                 if (!step.doc) {
                     finish = () => render(status,
                         el('p', {class: 'ok-text'}, done ? `Готово: перепроведено документов ${done}.` : 'Документов с этого момента нет.'),
                         step.needed ? el('div', {class: 'warnings'}, '⚠ Пока шло перепроведение, документы снова изменили задним числом: перепроведите ещё раз.') : null);
-                    after = null;
                     break;
                 }
-                const total = done + 1 + step.remaining;
-                if (step.error) {
-                    bar.max = total;
-                    bar.value = done;
-                    finish = () => render(status, bar, counter,
-                        el('div', {class: 'repost-error'},
-                            'Остановлено на документе ', el('a', {href: '#/docs/' + step.doc.id}, step.doc.title), ': ', step.error),
-                        el('p', {class: 'muted'}, 'Исправьте документ или те, что ему мешают, и нажмите «Продолжить»: перепроведение начнётся с него.'));
-                    break;
-                }
-                done += 1;
-                after = {moment: step.doc.moment, id: step.doc.id};
+                const total = done + (step.error ? 1 : 0) + step.remaining;
                 bar.max = total;
                 bar.value = done;
+                if (step.error) {
+                    finish = () => render(status, bar, counter, errorBlock(step.doc, step.error));
+                    break;
+                }
                 counter.textContent = `Перепроведено ${done} из ${total}`;
                 current.textContent = step.doc.title;
             }
@@ -2012,8 +2019,12 @@ async function renderRepost(view, params) {
             showMessage(e.message);
         }
         running = false;
-        startButton.disabled = dateInput.disabled = timeInput.disabled = false;
-        startButton.textContent = after ? 'Продолжить' : 'Перепровести';
+        // состояние прогона после остановки или конца - с сервера
+        const fresh = (await api('GET', 'repost').catch(() => ({run: null}))).run;
+        state.run = fresh;
+        startButton.disabled = restartButton.disabled = dateInput.disabled = timeInput.disabled = false;
+        startButton.textContent = fresh && fresh.from === moment() ? 'Продолжить' : 'Перепровести';
+        restartButton.hidden = !(fresh && fresh.from === moment());
         stopButton.hidden = true;
         if (finish) {
             finish();
@@ -2021,6 +2032,7 @@ async function renderRepost(view, params) {
         refreshRepostBanner();
     };
 
+    updateButtons();
     render(view,
         el('a', {class: 'back', href: '#/docs'}, '← Документы'),
         el('h2', {}, 'Перепроведение документов'),
@@ -2030,8 +2042,9 @@ async function renderRepost(view, params) {
                 `Документы с ${humanMoment(state.from.moment)} нужно перепровести.`)
             : el('p', {class: 'muted'}, 'Изменений задним числом нет. Перепровести можно с любого момента.'),
         el('p', {class: 'muted'}, 'Проведённые документы перепроводятся по порядку времени: себестоимость строк - на момент документа, ' +
-            'инвентаризация - заново от учётного остатка. На первой ошибке перепроведение остановится.'),
-        el('div', {class: 'toolbar'}, 'с', dateInput, timeInput, startButton, stopButton, countText),
+            'инвентаризация - заново от учётного остатка. На первой ошибке перепроведение остановится. Место остановки хранится ' +
+            'на сервере: продолжить можно после перезагрузки страницы и с другого компьютера.'),
+        el('div', {class: 'toolbar'}, 'с', dateInput, timeInput, startButton, restartButton, stopButton, countText),
         status);
     await updateCount();
 }

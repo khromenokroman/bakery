@@ -2,7 +2,8 @@
 // насчитала 38, реализация 21:00 30 шт. В карточке поступления 40 -> 50 («Сохранить и перепровести»):
 // предупреждение с причиной; после инвентаризации стало 48, и проходит реализация ещё 15 шт в 22:00.
 // Перепроведение останавливается на инвентаризации (после неё 38 - 30 - 15 < 0) с документом и
-// причиной; после отмены второй реализации «Продолжить» доходит до конца, предупреждение исчезает.
+// причиной; после перезагрузки страницы место остановки и ошибка видны (#3); после отмены второй
+// реализации «Продолжить» доходит до конца без повтора поступления, предупреждение исчезает.
 const post = async (path, body) => {
     const res = await fetch('/api/' + path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
     const data = await res.json();
@@ -47,6 +48,18 @@ expect(error.querySelector('a').getAttribute('href').startsWith('#/docs/'), 'н�
 expect(document.querySelector('progress').value === 1, 'прогресс: перепроведено ' + document.querySelector('progress').value);
 expect(btn('Продолжить'), 'нет кнопки «Продолжить»');
 log.push(error.textContent);
+
+// как после перезагрузки или с другого компьютера: страница заново, место остановки - с сервера
+location.hash = '#/docs';
+await sleep(600);
+location.hash = '#/repost';
+await sleep(900);
+const resumed = document.querySelector('.repost-progress').textContent;
+expect(resumed.includes('не закончено: перепроведено 1, осталось 3'), 'после перезагрузки нет незавершённого прогона: ' + resumed);
+expect(document.querySelector('.repost-error') && document.querySelector('.repost-error').textContent.includes('Инвентаризация № 1'),
+    'после перезагрузки нет ошибки остановки');
+expect(btn('Продолжить') && btn('Начать заново'), 'после перезагрузки нужны «Продолжить» и «Начать заново»');
+log.push('после перезагрузки: ' + resumed.slice(0, 90));
 
 await post(`docs/${late}/unpost`);
 btn('Продолжить').click();
