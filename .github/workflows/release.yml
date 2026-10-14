@@ -28,7 +28,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates git build-essential cmake dpkg-dev file curl chromium nodejs \
-            libsqlite3-dev nlohmann-json3-dev libgtest-dev libgmock-dev
+            libsqlite3-dev libssl-dev nlohmann-json3-dev libgtest-dev libgmock-dev
 
       - name: Checkout
         uses: actions/checkout@v7
