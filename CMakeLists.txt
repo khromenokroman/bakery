@@ -12,6 +12,7 @@ option(BUILD_TESTS "Собирать тесты" ON)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json 3 REQUIRED)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 include(GNUInstallDirs)
 
@@ -40,13 +41,14 @@ add_library(${PROJECT_NAME}-core STATIC
         src/schema.cpp
         src/settings.cpp
         src/stock.cpp
+        src/users.cpp
 )
 target_include_directories(${PROJECT_NAME}-core PUBLIC src)
 target_compile_definitions(${PROJECT_NAME}-core PUBLIC
         BAKERY_VERSION="${PROJECT_VERSION}"
         BAKERY_WEB_DIR="${BAKERY_WEB_DIR}")
 target_link_libraries(${PROJECT_NAME}-core PUBLIC
-        httplib SQLite::SQLite3 nlohmann_json::nlohmann_json Threads::Threads)
+        httplib SQLite::SQLite3 nlohmann_json::nlohmann_json Threads::Threads OpenSSL::Crypto)
 
 add_executable(${PROJECT_NAME}
         src/main.cpp
@@ -65,6 +67,7 @@ if (BUILD_TESTS)
             tests/inventory_test.cpp
             tests/options_test.cpp
             tests/period_test.cpp
+            tests/users_test.cpp
             tests/sales_test.cpp
             tests/prices_test.cpp
             tests/report_test.cpp

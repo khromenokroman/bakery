@@ -70,6 +70,29 @@ std::int64_t path_id(httplib::Request const &req) {
     return id;
 }
 
+constexpr char const SESSION_COOKIE[] = "bakery_session";
+
+/// Токен сессии из cookie запроса; пустой, если его нет.
+std::string session_token(httplib::Request const &req) {
+    auto const cookies = req.get_header_value("Cookie");
+    std::string const key = std::string(SESSION_COOKIE) + "=";
+    for (std::size_t pos = 0; pos < cookies.size();) {
+        auto const end = std::min(cookies.find(';', pos), cookies.size());
+        auto const first = cookies.find_first_not_of(' ', pos);
+        if (first < end && cookies.compare(first, key.size(), key) == 0) {
+            return cookies.substr(first + key.size(), end - first - key.size());
+        }
+        pos = end + 1;
+    }
+    return {};
+}
+
+/// Cookie сессии: только для сервера (HttpOnly), не уходит с чужих сайтов (SameSite=Strict).
+void set_session_cookie(httplib::Response &res, std::string const &token) {
+    res.set_header("Set-Cookie", std::string(SESSION_COOKIE) + "=" + token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" +
+                                     (token.empty() ? "0" : std::to_string(SESSION_DAYS * 24 * 3600)));
+}
+
 /// Заголовок документа для ответов перепроведения: место в порядке проведения и название.
 nlohmann::json doc_header(Document const &doc) {
     return {{"id", doc.id},     {"type", to_string(doc.type)}, {"number", doc.number},   {"date", doc.date},
@@ -87,24 +110,50 @@ std::string parse_moment(std::string const &date, std::string const &time) {
 Api::Api(Database &db, std::string web_dir)
     : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_groups{db}, m_prices{db}, m_partners{db}, m_docs{db}, m_stock{db}, m_db{db} {}
 
-Api::Handler Api::guarded(Handler handler) {
-    return [this, handler = std::move(handler)](httplib::Request const &req, httplib::Response &res) {
+Api::Handler Api::guarded(Handler handler) { return guarded(Access::USER, std::move(handler)); }
+
+Api::Handler Api::guarded(Access access, Handler handler) {
+    return [this, access, handler = std::move(handler)](httplib::Request const &req, httplib::Response &res) {
         auto const lock = m_db.lock();
+        m_user = Users{m_db}.by_session(session_token(req));
+        m_docs.set_actor(m_user ? std::optional(m_user->id) : std::nullopt);
         try {
+            if (access != Access::PUBLIC && !m_user) {
+                throw UnauthorizedError("нужно войти");
+            }
+            if (access == Access::TECHNOLOGIST && m_user->role == Role::SELLER) {
+                throw ForbiddenError("недостаточно прав: это делает технолог");
+            }
+            if (access == Access::ADMIN && m_user->role != Role::ADMIN) {
+                throw ForbiddenError("недостаточно прав: это делает администратор");
+            }
             handler(req, res);
         } catch (UserError const &e) {
             send_error(res, 400, e.what());
+        } catch (UnauthorizedError const &e) {
+            send_error(res, 401, e.what());
+        } catch (ForbiddenError const &e) {
+            send_error(res, 403, e.what());
         } catch (NotFoundError const &e) {
             send_error(res, 404, e.what());
         }
+        m_user.reset();
+        m_docs.set_actor(std::nullopt);
     };
+}
+
+void Api::check_doc_access(DocType type) const {
+    if (type == DocType::PRICES && m_user && m_user->role == Role::SELLER) {
+        throw ForbiddenError("недостаточно прав: установку цен ведёт технолог");
+    }
 }
 
 void Api::register_routes(httplib::Server &server) {
     server.set_payload_max_length(MAX_REQUEST_BYTES);
-    server.Get("/api/version", guarded([this](httplib::Request const &, httplib::Response &res) {
+    server.Get("/api/version", guarded(Access::PUBLIC, [this](httplib::Request const &, httplib::Response &res) {
                    send_json(res, {{"version", BAKERY_VERSION}, {"schema", current_schema_version(m_db)}});
                }));
+    register_auth(server);
     register_catalog(server);
     register_docs(server);
     register_groups(server);
@@ -112,7 +161,7 @@ void Api::register_routes(httplib::Server &server) {
     register_partners(server);
 
     server.Get("/api/settings", guarded([this](httplib::Request const &, httplib::Response &res) { send_json(res, Settings{m_db}.all()); }));
-    server.Put("/api/settings", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Put("/api/settings", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                    std::map<std::string, std::string> values;
                    // items() ссылается на объект: временный из parse_object уничтожился бы до цикла
                    auto const body = parse_object(req.body);
@@ -132,7 +181,7 @@ void Api::register_routes(httplib::Server &server) {
         return nlohmann::json{{"closed_till", till ? nlohmann::json(*till) : nlohmann::json(nullptr)}};
     };
     server.Get("/api/period", guarded([period_json](httplib::Request const &, httplib::Response &res) { send_json(res, period_json()); }));
-    server.Put("/api/period", guarded([this, period_json](httplib::Request const &req, httplib::Response &res) {
+    server.Put("/api/period", guarded(Access::TECHNOLOGIST, [this, period_json](httplib::Request const &req, httplib::Response &res) {
                    auto const j = parse_object(req.body);
                    std::optional<std::string> till;
                    if (j.contains("closed_till") && !j["closed_till"].is_null()) {
@@ -169,6 +218,88 @@ void Api::register_routes(httplib::Server &server) {
     });
 }
 
+void Api::register_auth(httplib::Server &server) {
+    server.Get("/api/auth", guarded(Access::PUBLIC, [this](httplib::Request const &, httplib::Response &res) {
+                   send_json(res, {{"setup", Users{m_db}.empty()}, {"user", m_user ? to_json(*m_user) : nlohmann::json(nullptr)}});
+               }));
+
+    server.Post("/api/auth/setup", guarded(Access::PUBLIC, [this](httplib::Request const &req, httplib::Response &res) {
+                    auto const j = parse_object(req.body);
+                    Users users{m_db};
+                    User user;
+                    user.login = get_string(j, "login");
+                    user.name = j.value("name", "");
+                    auto const id = users.setup(user, get_string(j, "password"));
+                    set_session_cookie(res, users.open_session(id));
+                    send_json(res, {{"user", to_json(users.get(id))}}, 201);
+                }));
+
+    server.Post("/api/auth/login", guarded(Access::PUBLIC, [this](httplib::Request const &req, httplib::Response &res) {
+                    auto const j = parse_object(req.body);
+                    Users users{m_db};
+                    auto const token = users.login(get_string(j, "login"), get_string(j, "password"));
+                    set_session_cookie(res, token);
+                    send_json(res, {{"user", to_json(*users.by_session(token))}});
+                }));
+
+    server.Post("/api/auth/logout", guarded(Access::PUBLIC, [this](httplib::Request const &req, httplib::Response &res) {
+                    Users{m_db}.logout(session_token(req));
+                    set_session_cookie(res, "");
+                    send_json(res, nlohmann::json::object());
+                }));
+
+    server.Put("/api/auth/password", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto const j = parse_object(req.body);
+                   Users users{m_db};
+                   if (!users.check_password(m_user->id, get_string(j, "old_password"))) {
+                       throw UserError("текущий пароль неверный");
+                   }
+                   users.set_password(m_user->id, get_string(j, "password"));
+                   // смена пароля закрывает все сессии, в том числе эту: вместо неё открывается новая
+                   set_session_cookie(res, users.open_session(m_user->id));
+                   send_json(res, nlohmann::json::object());
+               }));
+
+    server.Get("/api/users", guarded(Access::ADMIN, [this](httplib::Request const &, httplib::Response &res) {
+                   auto out = nlohmann::json::array();
+                   for (auto const &user : Users{m_db}.list()) {
+                       out.push_back(to_json(user));
+                   }
+                   send_json(res, out);
+               }));
+
+    server.Post("/api/users", guarded(Access::ADMIN, [this](httplib::Request const &req, httplib::Response &res) {
+                    auto const j = parse_object(req.body);
+                    Users users{m_db};
+                    User user;
+                    user.login = get_string(j, "login");
+                    user.name = j.value("name", "");
+                    user.role = role_from_string(get_string(j, "role"));
+                    auto const id = users.create(user, get_string(j, "password"));
+                    send_json(res, to_json(users.get(id)), 201);
+                }));
+
+    server.Put("/api/users/:id", guarded(Access::ADMIN, [this](httplib::Request const &req, httplib::Response &res) {
+                   auto const j = parse_object(req.body);
+                   Users users{m_db};
+                   auto user = users.get(path_id(req));
+                   if (j.contains("name")) {
+                       user.name = get_string(j, "name");
+                   }
+                   if (j.contains("role")) {
+                       user.role = role_from_string(get_string(j, "role"));
+                   }
+                   if (auto const blocked = get_bool(j, "blocked")) {
+                       user.blocked = *blocked;
+                   }
+                   users.update(user);
+                   if (j.contains("password")) {
+                       users.set_password(user.id, get_string(j, "password"));
+                   }
+                   send_json(res, to_json(users.get(user.id)));
+               }));
+}
+
 void Api::register_catalog(httplib::Server &server) {
     server.Get("/api/items", guarded([this](httplib::Request const &req, httplib::Response &res) {
                    ItemFilter filter;
@@ -186,7 +317,7 @@ void Api::register_catalog(httplib::Server &server) {
                    send_json(res, out);
                }));
 
-    server.Post("/api/items", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Post("/api/items", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                     auto const j = parse_object(req.body);
                     Item item;
                     item.name = get_string(j, "name");
@@ -201,14 +332,14 @@ void Api::register_catalog(httplib::Server &server) {
     server.Get("/api/items/:id",
                guarded([this](httplib::Request const &req, httplib::Response &res) { send_json(res, to_json(m_catalog.get(path_id(req)))); }));
 
-    server.Put("/api/items/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Put("/api/items/:id", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                    auto const id = path_id(req);
                    auto const item = item_from_json(parse_object(req.body), m_catalog.get(id));
                    m_catalog.update(item);
                    send_json(res, to_json(m_catalog.get(id)));
                }));
 
-    server.Delete("/api/items/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Delete("/api/items/:id", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                       m_catalog.remove(path_id(req));
                       send_json(res, nlohmann::json::object());
                   }));
@@ -220,7 +351,7 @@ void Api::register_catalog(httplib::Server &server) {
                    send_json(res, recipe ? to_json(*recipe) : nlohmann::json(nullptr));
                }));
 
-    server.Put("/api/items/:id/recipe", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Put("/api/items/:id/recipe", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                    auto const id = path_id(req);
                    m_catalog.set_recipe(id, recipe_from_json(parse_object(req.body)));
                    send_json(res, to_json(*m_catalog.recipe(id)));
@@ -242,19 +373,19 @@ void Api::register_catalog(httplib::Server &server) {
                    res.set_content(photo->data, photo->mime);
                }));
 
-    server.Put("/api/items/:id/photo", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Put("/api/items/:id/photo", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                    auto const id = path_id(req);
                    m_catalog.set_photo(id, req.body);
                    send_json(res, to_json(m_catalog.get(id)));
                }));
 
-    server.Delete("/api/items/:id/photo", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Delete("/api/items/:id/photo", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                       auto const id = path_id(req);
                       m_catalog.remove_photo(id);
                       send_json(res, to_json(m_catalog.get(id)));
                   }));
 
-    server.Delete("/api/items/:id/recipe", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Delete("/api/items/:id/recipe", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                       auto const id = path_id(req);
                       (void)m_catalog.get(id);
                       m_catalog.remove_recipe(id);
@@ -293,7 +424,9 @@ void Api::register_docs(httplib::Server &server) {
                     if (!j.contains("type")) {
                         throw UserError("нет поля type");
                     }
-                    auto const id = m_docs.create(document_from_json(j));
+                    auto const doc = document_from_json(j);
+                    check_doc_access(doc.type);
+                    auto const id = m_docs.create(doc);
                     send_json(res, to_json(m_docs.get(id)), 201);
                 }));
 
@@ -303,12 +436,15 @@ void Api::register_docs(httplib::Server &server) {
     server.Put("/api/docs/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
                    auto doc = document_from_json(parse_object(req.body));
                    doc.id = path_id(req);
+                   check_doc_access(m_docs.get(doc.id).type);
                    m_docs.update(doc);
                    send_json(res, to_json(m_docs.get(doc.id)));
                }));
 
     server.Delete("/api/docs/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
-                      m_docs.remove(path_id(req));
+                      auto const id = path_id(req);
+                      check_doc_access(m_docs.get(id).type);
+                      m_docs.remove(id);
                       send_json(res, nlohmann::json::object());
                   }));
 
@@ -326,12 +462,14 @@ void Api::register_docs(httplib::Server &server) {
 
     server.Post("/api/docs/:id/post", guarded([this](httplib::Request const &req, httplib::Response &res) {
                     auto const id = path_id(req);
+                    check_doc_access(m_docs.get(id).type);
                     m_docs.post(id);
                     send_json(res, to_json(m_docs.get(id)));
                 }));
 
     server.Post("/api/docs/:id/unpost", guarded([this](httplib::Request const &req, httplib::Response &res) {
                     auto const id = path_id(req);
+                    check_doc_access(m_docs.get(id).type);
                     m_docs.unpost(id);
                     send_json(res, to_json(m_docs.get(id)));
                 }));
@@ -355,7 +493,7 @@ void Api::register_docs(httplib::Server &server) {
                    send_json(res, {{"count", Reposter{m_db}.count(parse_moment(req.get_param_value("date"), req.get_param_value("time")))}});
                }));
 
-    server.Post("/api/repost/step", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Post("/api/repost/step", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                     auto const j = parse_object(req.body);
                     auto const from = parse_moment(j.value("date", ""), j.value("time", ""));
                     std::optional<DocKey> after;
@@ -427,19 +565,19 @@ void Api::register_groups(httplib::Server &server) {
                    send_json(res, out);
                }));
 
-    server.Post("/api/groups", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Post("/api/groups", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                     auto const id = m_groups.create(group_from_json(parse_object(req.body)));
                     send_json(res, to_json(m_groups.get(id)), 201);
                 }));
 
-    server.Put("/api/groups/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Put("/api/groups/:id", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                    auto group = group_from_json(parse_object(req.body));
                    group.id = path_id(req);
                    m_groups.update(group);
                    send_json(res, to_json(m_groups.get(group.id)));
                }));
 
-    server.Delete("/api/groups/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Delete("/api/groups/:id", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                       m_groups.remove(path_id(req));
                       send_json(res, nlohmann::json::object());
                   }));
@@ -454,18 +592,18 @@ void Api::register_prices(httplib::Server &server) {
                    send_json(res, out);
                }));
 
-    server.Post("/api/price-types", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Post("/api/price-types", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                     auto const id = m_prices.create_type(get_string(parse_object(req.body), "name"));
                     send_json(res, to_json(m_prices.type(id)), 201);
                 }));
 
-    server.Put("/api/price-types/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Put("/api/price-types/:id", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                    auto const id = path_id(req);
                    m_prices.rename_type(id, get_string(parse_object(req.body), "name"));
                    send_json(res, to_json(m_prices.type(id)));
                }));
 
-    server.Delete("/api/price-types/:id", guarded([this](httplib::Request const &req, httplib::Response &res) {
+    server.Delete("/api/price-types/:id", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
                       m_prices.remove_type(path_id(req));
                       send_json(res, nlohmann::json::object());
                   }));

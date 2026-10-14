@@ -32,6 +32,17 @@ class TestServer {
         while (!m_server.is_running()) {
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
+        // первый пользователь - администратор; его сессия уходит со всеми запросами client()
+        auto const res = anonymous().Post("/api/auth/setup", R"({"login": "admin", "name": "Админ", "password": "secret1"})", "application/json");
+        if (res && res->status == 201) {
+            m_cookie = cookie_of(*res);
+        }
+    }
+
+    /// Пара "bakery_session=..." из Set-Cookie ответа.
+    static std::string cookie_of(httplib::Response const &res) {
+        auto const header = res.get_header_value("Set-Cookie");
+        return header.substr(0, header.find(';'));
     }
 
     ~TestServer() {
@@ -39,13 +50,25 @@ class TestServer {
         m_thread.join();
     }
 
-    [[nodiscard]] httplib::Client client() const { return httplib::Client{"127.0.0.1", m_port}; }
+    /// Клиент с сессией администратора.
+    [[nodiscard]] httplib::Client client() const { return client_as(m_cookie); }
+
+    /// Клиент с заданной cookie сессии ("bakery_session=...").
+    [[nodiscard]] httplib::Client client_as(std::string const &cookie) const {
+        httplib::Client cli{"127.0.0.1", m_port};
+        cli.set_default_headers({{"Cookie", cookie}});
+        return cli;
+    }
+
+    /// Клиент без входа.
+    [[nodiscard]] httplib::Client anonymous() const { return httplib::Client{"127.0.0.1", m_port}; }
 
    private:
     httplib::Server m_server;
     Database m_db;
     std::unique_ptr<Api> m_api;
     std::thread m_thread;
+    std::string m_cookie;
     int m_port = 0;
 };
 
@@ -724,4 +747,158 @@ TEST(ApiCatalog, Photo) {
     EXPECT_EQ(removed.status, 200) << removed.body;
     EXPECT_TRUE(removed.body.at("photo").is_null()) << removed.body;
     EXPECT_EQ(CALL(srv, "GET", path).status, 404) << "после удаления фото нет";
+}
+
+namespace {
+
+/// Запрос клиентом cli с телом JSON; код ответа или -1 без ответа.
+int status_of(httplib::Client &cli, std::string const &method, std::string const &path, nlohmann::json const &body = nlohmann::json::object()) {
+    auto const text = body.dump();
+    httplib::Result res = method == "GET"    ? cli.Get(path)
+                          : method == "POST" ? cli.Post(path, text, "application/json")
+                          : method == "PUT"  ? cli.Put(path, text, "application/json")
+                                             : cli.Delete(path);
+    return res ? res->status : -1;
+}
+
+/// Вход через API: cookie сессии или пустая строка.
+std::string login_as(TestServer const &srv, std::string const &login, std::string const &password) {
+    auto cli = srv.anonymous();
+    auto const res = cli.Post("/api/auth/login", nlohmann::json{{"login", login}, {"password", password}}.dump(), "application/json");
+    return res && res->status == 200 ? TestServer::cookie_of(*res) : std::string{};
+}
+
+} // namespace
+
+/**
+ * @brief Без входа API отвечает 401 (кроме версии и входа); setup второй раз отклоняется; после выхода сессия
+ * не действует.
+ */
+TEST(ApiAuth, LoginRequired) {
+    TestServer srv;
+    auto anon = srv.anonymous();
+    EXPECT_EQ(status_of(anon, "GET", "/api/version"), 200) << "версия доступна без входа";
+    EXPECT_EQ(status_of(anon, "GET", "/api/items"), 401) << "справочник без входа";
+    EXPECT_EQ(status_of(anon, "POST", "/api/docs", {{"type", "order"}}), 401);
+    auto const state = anon.Get("/api/auth");
+    ASSERT_TRUE(state);
+    auto const body = nlohmann::json::parse(state->body);
+    EXPECT_EQ(body.at("setup"), false) << "администратор уже создан: " << state->body;
+    EXPECT_TRUE(body.at("user").is_null()) << state->body;
+    EXPECT_EQ(status_of(anon, "POST", "/api/auth/setup", {{"login", "evil"}, {"password", "secret1"}}), 400) << "повторный setup";
+
+    EXPECT_EQ(login_as(srv, "admin", "wrong!"), "") << "неверный пароль";
+    auto const cookie = login_as(srv, "admin", "secret1");
+    ASSERT_FALSE(cookie.empty());
+    auto cli = srv.client_as(cookie);
+    auto const me = cli.Get("/api/auth");
+    ASSERT_TRUE(me);
+    EXPECT_EQ(nlohmann::json::parse(me->body).at("user").at("login"), "admin") << me->body;
+    auto const out = cli.Post("/api/auth/logout", "{}", "application/json");
+    ASSERT_TRUE(out);
+    EXPECT_THAT(out->get_header_value("Set-Cookie"), HasSubstr("Max-Age=0")) << "выход стирает cookie";
+    EXPECT_EQ(status_of(cli, "GET", "/api/items"), 401) << "после выхода сессия закрыта";
+}
+
+/**
+ * @brief Права ролей: продавец ведёт документы, кроме установки цен, и клиентов, справочники только читает;
+ * технолог всё, кроме пользователей; пользователями управляет администратор.
+ */
+TEST(ApiAuth, Roles) {
+    TestServer srv;
+    ASSERT_EQ(CALL(srv, "POST", "/api/users", {{"login", "olga"}, {"role", "seller"}, {"password", "secret1"}}).status, 201);
+    ASSERT_EQ(CALL(srv, "POST", "/api/users", {{"login", "tanya"}, {"role", "technologist"}, {"password", "secret1"}}).status, 201);
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id").get<std::int64_t>();
+    auto const prices =
+        CALL(srv, "POST", "/api/docs",
+             {{"type", "prices"}, {"date", "2026-10-01"}, {"price_type_id", 1}, {"lines", {{{"item_id", bread}, {"price_kop", 3000}}}}})
+            .body.at("id")
+            .get<std::int64_t>();
+
+    auto seller = srv.client_as(login_as(srv, "olga", "secret1"));
+    EXPECT_EQ(status_of(seller, "GET", "/api/items"), 200) << "продавец видит номенклатуру";
+    EXPECT_EQ(status_of(seller, "GET", "/api/stock"), 200) << "и остатки";
+    EXPECT_EQ(status_of(seller, "POST", "/api/items", {{"name", "Багет"}, {"kind", "product"}, {"unit", "pcs"}}), 403) << "но не меняет";
+    EXPECT_EQ(status_of(seller, "PUT", "/api/settings", {{"org_name", "x"}}), 403);
+    EXPECT_EQ(status_of(seller, "PUT", "/api/period", {{"closed_till", nullptr}}), 403);
+    EXPECT_EQ(status_of(seller, "POST", "/api/price-types", {{"name", "Опт"}}), 403);
+    EXPECT_EQ(status_of(seller, "POST", "/api/repost/step", {{"date", "2026-10-01"}}), 403);
+    EXPECT_EQ(status_of(seller, "POST", "/api/docs",
+                        {{"type", "prices"}, {"date", "2026-10-01"}, {"price_type_id", 1}, {"lines", {{{"item_id", bread}, {"price_kop", 1}}}}}),
+              403)
+        << "установка цен не продавцу";
+    EXPECT_EQ(status_of(seller, "POST", "/api/docs/" + std::to_string(prices) + "/post"), 403) << "провести установку цен";
+    EXPECT_EQ(status_of(seller, "GET", "/api/docs/" + std::to_string(prices)), 200) << "смотреть установку цен можно";
+    EXPECT_EQ(
+        status_of(seller, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-02"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}}),
+        201)
+        << "поступление продавцу можно";
+    EXPECT_EQ(status_of(seller, "POST", "/api/partners", {{"name", "Колосок"}}), 201) << "клиентов продавец ведёт";
+    EXPECT_EQ(status_of(seller, "GET", "/api/users"), 403);
+
+    auto tech = srv.client_as(login_as(srv, "tanya", "secret1"));
+    EXPECT_EQ(status_of(tech, "POST", "/api/items", {{"name", "Багет"}, {"kind", "product"}, {"unit", "pcs"}}), 201);
+    EXPECT_EQ(status_of(tech, "POST", "/api/docs/" + std::to_string(prices) + "/post"), 200) << "технолог проводит установку цен";
+    EXPECT_EQ(status_of(tech, "GET", "/api/users"), 403) << "пользователи только администратору";
+    EXPECT_EQ(status_of(tech, "POST", "/api/users", {{"login", "x"}, {"role", "admin"}, {"password", "secret1"}}), 403);
+}
+
+/**
+ * @brief Администратор меняет роль, пароль и блокирует; блокировка сразу закрывает сессию; свой пароль меняется
+ * со старым паролем и выдаёт новую сессию.
+ */
+TEST(ApiAuth, ManageUsers) {
+    TestServer srv;
+    auto const id = CALL(srv, "POST", "/api/users", {{"login", "olga"}, {"name", "Ольга"}, {"role", "seller"}, {"password", "secret1"}})
+                        .body.at("id")
+                        .get<std::int64_t>();
+    auto const path = "/api/users/" + std::to_string(id);
+    auto olga = srv.client_as(login_as(srv, "olga", "secret1"));
+
+    auto const list = CALL(srv, "GET", "/api/users");
+    ASSERT_EQ(list.body.size(), 2U) << list.body;
+    EXPECT_FALSE(list.body.dump().find("pass") != std::string::npos) << "хеш пароля не отдаётся: " << list.body;
+
+    auto r = CALL(srv, "PUT", path, {{"role", "technologist"}});
+    EXPECT_EQ(r.body.at("role"), "technologist") << r.body;
+    EXPECT_EQ(status_of(olga, "POST", "/api/price-types", {{"name", "Опт"}}), 201) << "новая роль действует сразу";
+
+    r = CALL(srv, "PUT", path, {{"blocked", true}});
+    EXPECT_EQ(r.body.at("blocked"), true) << r.body;
+    EXPECT_EQ(status_of(olga, "GET", "/api/items"), 401) << "заблокированный выкинут";
+    EXPECT_EQ(login_as(srv, "olga", "secret1"), "") << "и не может войти";
+
+    CALL(srv, "PUT", path, {{"blocked", false}, {"password", "newpass"}});
+    EXPECT_EQ(login_as(srv, "olga", "secret1"), "") << "старый пароль после смены администратором";
+    olga = srv.client_as(login_as(srv, "olga", "newpass"));
+    EXPECT_EQ(status_of(olga, "PUT", "/api/auth/password", {{"old_password", "wrong!"}, {"password", "mypass1"}}), 400) << "неверный текущий пароль";
+    auto const changed =
+        olga.Put("/api/auth/password", nlohmann::json{{"old_password", "newpass"}, {"password", "mypass1"}}.dump(), "application/json");
+    ASSERT_TRUE(changed);
+    EXPECT_EQ(changed->status, 200) << changed->body;
+    auto fresh = srv.client_as(TestServer::cookie_of(*changed));
+    EXPECT_EQ(status_of(fresh, "GET", "/api/items"), 200) << "после смены своего пароля выдаётся новая сессия";
+    EXPECT_EQ(status_of(olga, "GET", "/api/items"), 401) << "старая сессия закрыта";
+
+    auto const self = CALL(srv, "GET", "/api/auth").body.at("user").at("id").get<std::int64_t>();
+    r = CALL(srv, "PUT", "/api/users/" + std::to_string(self), {{"role", "seller"}});
+    EXPECT_EQ(r.status, 400) << "последнего администратора не понизить: " << r.body;
+}
+
+/**
+ * @brief Документ, созданный через API, показывает автора и того, кто его провёл.
+ */
+TEST(ApiAuth, DocumentAuthor) {
+    TestServer srv;
+    CALL(srv, "POST", "/api/users", {{"login", "olga"}, {"name", "Ольга"}, {"role", "seller"}, {"password", "secret1"}});
+    auto const bread = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id");
+    auto const doc =
+        CALL(srv, "POST", "/api/docs", {{"type", "production"}, {"date", "2026-10-02"}, {"lines", {{{"item_id", bread}, {"qty", 1000}}}}});
+    EXPECT_EQ(doc.body.at("created_by"), "Админ") << doc.body;
+    auto olga = srv.client_as(login_as(srv, "olga", "secret1"));
+    auto const posted = olga.Post("/api/docs/" + std::to_string(doc.body.at("id").get<std::int64_t>()) + "/post", "{}", "application/json");
+    ASSERT_TRUE(posted);
+    auto const body = nlohmann::json::parse(posted->body);
+    EXPECT_EQ(body.at("created_by"), "Админ") << posted->body;
+    EXPECT_EQ(body.at("updated_by"), "Ольга") << posted->body;
 }

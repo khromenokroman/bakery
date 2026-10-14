@@ -51,6 +51,10 @@ struct Document {
     std::string partner_name;                  ///< только для чтения
     std::optional<std::int64_t> base_id;       ///< основание: реализация для возврата
     std::optional<std::int64_t> group_id; ///< область инвентаризации: группа с подгруппами; пусто - вся продукция
+    std::string created_by; ///< только для чтения: кто создал (имя или логин), пусто - неизвестно
+    std::string created_at; ///< только для чтения: когда создан, "ГГГГ-ММ-ДД ЧЧ:ММ:СС" местного времени
+    std::string updated_by; ///< только для чтения: кто последним изменил, провёл или отменил проведение
+    std::string updated_at; ///< только для чтения: когда
     std::int64_t id{};
     std::int64_t number{}; ///< только для чтения: присваивается при создании, сквозной в пределах вида
     DocType type = DocType::ORDER;
@@ -171,6 +175,12 @@ class Documents {
     void unpost(std::int64_t id);
 
     /**
+     * @brief Кто сейчас работает с документами: записывается как автор при создании и как изменивший при
+     * изменении, проведении и отмене проведения. nullopt - не записывать (тесты, перепроведение).
+     */
+    void set_actor(std::optional<std::int64_t> user_id);
+
+    /**
      * @brief Перепроводит проведённый документ как есть: себестоимость строк на его момент, цена
      * возврата из реализации, разница инвентаризации с учётом на её момент. Отметку не ставит.
      * @throws NotFoundError, UserError не проведён, остаток уйдёт в минус
@@ -210,8 +220,12 @@ class Documents {
     /// Движения склада по строкам документа на его дату, со знаком его вида.
     void write_moves(Document const &doc);
 
+    /// Отмечает, кто и когда изменил документ id; при created и кто создал.
+    void touch(std::int64_t id, bool created);
+
     /// Позиции, по которым у документа есть движения склада.
     [[nodiscard]] std::vector<std::int64_t> moved_items(std::int64_t doc_id) const;
 
     Database &m_db;
+    std::optional<std::int64_t> m_actor;
 };

@@ -151,6 +151,10 @@ nlohmann::json to_json(Document const &doc) {
         {"partner_name", doc.partner_name},
         {"base_id", optional_json(doc.base_id)},
         {"group_id", optional_json(doc.group_id)},
+        {"created_by", doc.created_by},
+        {"created_at", doc.created_at},
+        {"updated_by", doc.updated_by},
+        {"updated_at", doc.updated_at},
         {"lines", lines},
     };
 }
@@ -344,4 +348,8 @@ nlohmann::json to_json(GoodsReport const &report) {
         {"outgoing", docs(report.outgoing)},
         {"items", items},
     };
+}
+
+nlohmann::json to_json(User const &user) {
+    return {{"id", user.id}, {"login", user.login}, {"name", user.name}, {"role", to_string(user.role)}, {"blocked", user.blocked}};
 }

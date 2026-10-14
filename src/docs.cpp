@@ -209,8 +209,10 @@ std::vector<Document> Documents::list(DocFilter const &filter) const {
 
 Document Documents::get(std::int64_t id) const {
     auto head = m_db.prepare(
-        "SELECT d.type, d.number, d.date, d.status, d.comment, d.price_type_id, d.partner_id, p.name, d.base_id, d.group_id FROM docs d "
-        "LEFT JOIN partners p ON p.id = d.partner_id WHERE d.id = ?");
+        "SELECT d.type, d.number, d.date, d.status, d.comment, d.price_type_id, d.partner_id, p.name, d.base_id, d.group_id, "
+        "coalesce(nullif(c.name, ''), c.login, ''), coalesce(d.created_at, ''), coalesce(nullif(u.name, ''), u.login, ''), "
+        "coalesce(d.updated_at, '') FROM docs d LEFT JOIN partners p ON p.id = d.partner_id LEFT JOIN users c ON c.id = d.created_by "
+        "LEFT JOIN users u ON u.id = d.updated_by WHERE d.id = ?");
     head.bind(1, id);
     if (!head.step()) {
         throw NotFoundError("нет документа с id " + std::to_string(id));
@@ -237,6 +239,10 @@ Document Documents::get(std::int64_t id) const {
     if (!head.column_is_null(9)) {
         doc.group_id = head.column_int(9);
     }
+    doc.created_by = head.column_text(10);
+    doc.created_at = head.column_text(11);
+    doc.updated_by = head.column_text(12);
+    doc.updated_at = head.column_text(13);
 
     auto lines = m_db.prepare(
         "SELECT l.item_id, i.name, i.unit, l.qty, l.price_kop, l.cost_kop FROM doc_lines l JOIN items i ON i.id = l.item_id "
@@ -302,6 +308,7 @@ std::int64_t Documents::create(Document const &input) {
     auto saved = doc;
     saved.id = id;
     write_lines(saved);
+    touch(id, true);
     tx.commit();
     return id;
 }
@@ -373,6 +380,7 @@ void Documents::update(Document const &doc) {
         mark_backdated(old, moment(old));
         mark_backdated(get(doc.id), moment(checked));
     }
+    touch(doc.id, false);
     tx.commit();
 }
 
@@ -409,6 +417,7 @@ void Documents::post(std::int64_t id) {
     auto upd = m_db.prepare("UPDATE docs SET status = 'posted' WHERE id = ?");
     upd.bind(1, id);
     upd.step();
+    touch(id, false);
     Stock{m_db}.check_non_negative(moved_items(id));
     mark_backdated(doc, moment(doc));
     tx.commit();
@@ -431,9 +440,23 @@ void Documents::unpost(std::int64_t id) {
     auto upd = m_db.prepare("UPDATE docs SET status = 'draft' WHERE id = ?");
     upd.bind(1, id);
     upd.step();
+    touch(id, false);
     Stock{m_db}.check_non_negative(moved);
     mark_backdated(doc, moment(doc));
     tx.commit();
+}
+
+void Documents::set_actor(std::optional<std::int64_t> user_id) { m_actor = user_id; }
+
+void Documents::touch(std::int64_t id, bool created) {
+    if (!m_actor) {
+        return;
+    }
+    auto stmt = m_db.prepare(created ? "UPDATE docs SET created_by = ?1, created_at = datetime('now', 'localtime'), updated_by = ?1, "
+                                       "updated_at = datetime('now', 'localtime') WHERE id = ?2"
+                                     : "UPDATE docs SET updated_by = ?1, updated_at = datetime('now', 'localtime') WHERE id = ?2");
+    stmt.bind(1, *m_actor).bind(2, id);
+    stmt.step();
 }
 
 void Documents::repost(std::int64_t id) {

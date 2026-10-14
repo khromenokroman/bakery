@@ -13,6 +13,7 @@
 #include "report.hpp"
 #include "requirements.hpp"
 #include "stock.hpp"
+#include "users.hpp"
 
 /**
  * @brief Разбирает тело запроса как JSON-объект.
@@ -71,3 +72,6 @@
 [[nodiscard]] nlohmann::json to_json(Returnable const &r);
 
 [[nodiscard]] nlohmann::json to_json(GoodsReport const &report);
+
+/// Пользователь без хеша пароля.
+[[nodiscard]] nlohmann::json to_json(User const &user);

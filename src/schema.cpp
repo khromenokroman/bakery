@@ -8,7 +8,7 @@
 namespace {
 
 /// Миграции схемы. Применённую миграцию не менять: изменения только новой миграцией в конце.
-constexpr std::array<std::string_view, 12> MIGRATIONS = {
+constexpr std::array<std::string_view, 13> MIGRATIONS = {
     // 1: справочники, документы, движения склада
     R"sql(
 CREATE TABLE items (
@@ -196,6 +196,28 @@ CREATE TABLE item_photos (
     etag TEXT NOT NULL,
     data BLOB NOT NULL
 );
+)sql",
+    // 13: пользователи с ролью администратора и блокировкой (старая таблица users не использовалась),
+    // сессии по хешу токена, кто и когда создал и последним изменил документ
+    R"sql(
+DROP TABLE users;
+CREATE TABLE users (
+    id        INTEGER PRIMARY KEY,
+    login     TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    name      TEXT NOT NULL DEFAULT '',
+    pass_hash TEXT NOT NULL,
+    role      TEXT NOT NULL CHECK (role IN ('admin', 'technologist', 'seller')),
+    blocked   INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    expires    TEXT NOT NULL
+);
+ALTER TABLE docs ADD COLUMN created_by INTEGER REFERENCES users (id);
+ALTER TABLE docs ADD COLUMN created_at TEXT;
+ALTER TABLE docs ADD COLUMN updated_by INTEGER REFERENCES users (id);
+ALTER TABLE docs ADD COLUMN updated_at TEXT;
 )sql",
 };
 

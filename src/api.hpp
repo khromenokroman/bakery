@@ -1,5 +1,7 @@
 #pragma once
+#include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 
 #include "catalog.hpp"
@@ -9,6 +11,7 @@
 #include "partners.hpp"
 #include "prices.hpp"
 #include "stock.hpp"
+#include "users.hpp"
 
 namespace httplib {
 class Server;
@@ -36,9 +39,28 @@ class Api {
     using Handler = std::function<void(httplib::Request const &, httplib::Response &)>;
 
     /**
-     * @brief Оборачивает обработчик: захват базы, перевод исключений в ответы 400/404.
+     * @brief Кому доступен метод.
      */
+    enum class Access : std::uint8_t {
+        PUBLIC,       ///< без входа
+        USER,         ///< любой вошедший пользователь
+        TECHNOLOGIST, ///< технолог и администратор
+        ADMIN,        ///< только администратор
+    };
+
+    /**
+     * @brief Оборачивает обработчик: захват базы, проверка сессии и роли, перевод исключений в ответы
+     * 400/401/403/404. На время обработчика m_user - вошедший пользователь, он же автор изменений документов.
+     */
+    [[nodiscard]] Handler guarded(Access access, Handler handler);
+
+    /// То же для любого вошедшего пользователя.
     [[nodiscard]] Handler guarded(Handler handler);
+
+    /// @throws ForbiddenError если продавец меняет документ вида type, который ему не доступен
+    void check_doc_access(DocType type) const;
+
+    void register_auth(httplib::Server &server);
 
     void register_catalog(httplib::Server &server);
     void register_docs(httplib::Server &server);
@@ -46,6 +68,7 @@ class Api {
     void register_prices(httplib::Server &server);
     void register_partners(httplib::Server &server);
 
+    std::optional<User> m_user; ///< вошедший пользователь текущего запроса; меняется только под блокировкой базы
     std::string m_web_dir;
     Catalog m_catalog;
     Groups m_groups;
