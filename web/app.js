@@ -1805,14 +1805,17 @@ async function renderReport(view, params) {
     const d = iso => humanDate(iso).split(',')[0];
     const money = (cost, price) => [el('td', {class: 'num'}, formatMoney(cost)), priceType ? el('td', {class: 'num'}, formatMoney(price)) : null];
     const docRow = r => el('tr', {},
-        el('td', {}, r.type === 'prices' ? 'Переоценка (установка цен)' : DOC_TYPES[r.type].title + (r.partner_name ? ', ' + r.partner_name : '')),
+        el('td', {}, r.type === 'prices' ? 'Переоценка (установка цен)'
+            : (r.revaluation ? (r.incoming ? 'Переоценка: продано дороже цены' : 'Переоценка: продано дешевле цены') : DOC_TYPES[r.type].title) +
+              (r.partner_name ? ', ' + r.partner_name : '')),
         el('td', {class: 'center'}, d(r.date) + ' ' + r.time),
         el('td', {class: 'center'}, el('a', {href: '#/docs/' + r.id}, String(r.number))),
         money(r.sum, r.price_sum),
         el('td'));
     const sumRow = (text, cost, price) => el('tr', {class: 'f-total'}, el('td', {colspan: 3}, text), money(cost, price), el('td'));
     const section = text => el('tr', {}, el('td', {colspan: priceType ? 6 : 5}, el('strong', {}, text)));
-    const docs = report.incoming.length + report.outgoing.length;
+    // переоценка при продаже - строка к реализации, а не отдельный документ
+    const docs = [...report.incoming, ...report.outgoing].filter(r => !r.revaluation).length;
 
     render(view,
         el('div', {class: 'toolbar no-print'},
