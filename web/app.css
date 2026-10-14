@@ -176,13 +176,19 @@ label.check {
     font-size: 15px;
 }
 
-input, select, button {
+input, select, button, a.button {
     font: inherit;
     padding: 5px 8px;
     border: 1px solid var(--line);
     border-radius: 4px;
     background: #fff;
     color: var(--fg);
+}
+
+/* ссылка в виде кнопки: скачивание файла */
+a.button {
+    display: inline-block;
+    text-decoration: none;
 }
 
 input.money {

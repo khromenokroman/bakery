@@ -72,6 +72,7 @@ call PUT period '{"closed_till":"2026-10-05"}' >/dev/null
 base64 -d <<<'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' \
     | curl -sf -X PUT "$API/items/$BREAD/photo" -H 'Content-Type: image/png' -H "Cookie: $ADMIN" --data-binary @- >/dev/null
 call POST users '{"login":"olga","name":"Ольга","role":"seller","password":"secret1"}' >/dev/null
+call POST backups '' >/dev/null
 SELLER=$(curl -sf -D - -o /dev/null -X POST "$API/auth/login" -H 'Content-Type: application/json' \
     -d '{"login":"olga","password":"secret1"}' | sed -n 's/^Set-Cookie: \([^;]*\).*/\1/Ip')
 
@@ -127,6 +128,7 @@ PAGES=(
     "docs/$PR0"
     "users"
     "password"
+    "backups"
 )
 SELLER_PAGES=(
     "items"

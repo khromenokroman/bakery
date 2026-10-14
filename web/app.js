@@ -2223,6 +2223,64 @@ async function renderUsers(view) {
             el('tbody', {}, rows))));
 }
 
+/** Размер файла: "512 КБ", "3,4 МБ". */
+function formatSize(bytes) {
+    return bytes < 1024 * 1024
+        ? Math.max(1, Math.round(bytes / 1024)) + ' КБ'
+        : (bytes / 1024 / 1024).toFixed(1).replace('.', ',') + ' МБ';
+}
+
+/**
+ * Резервные копии (администратор): копия сейчас, расписание, скачивание и удаление.
+ */
+async function renderBackups(view) {
+    const state = await api('GET', 'backups');
+    const s = state.schedule;
+    const enabled = el('input', {type: 'checkbox', checked: s.enabled});
+    const time = el('input', {type: 'time', value: s.time});
+    const keep = el('input', {type: 'number', min: 1, max: 365, value: s.keep, style: 'width: 5em'});
+    const saveSchedule = async () => {
+        if (await attempt(() => api('PUT', 'backups/schedule', {enabled: enabled.checked, time: time.value, keep: Number(keep.value)}),
+            'Расписание сохранено')) {
+            route();
+        }
+    };
+    const createNow = async () => {
+        if (await attempt(() => api('POST', 'backups'), 'Копия сделана')) {
+            route();
+        }
+    };
+    const remove = async name => {
+        if (confirm(`Удалить копию ${name}?`) && await attempt(() => api('DELETE', `backups/${name}`), 'Копия удалена')) {
+            route();
+        }
+    };
+
+    render(view,
+        el('div', {class: 'toolbar section-head', style: 'margin-top: 0'},
+            el('h2', {}, 'Резервные копии'),
+            el('button', {class: 'primary', onclick: createNow}, 'Сделать копию сейчас')),
+        el('p', {class: 'muted'}, `Копии хранятся на сервере в ${state.dir}. Скачайте копию, чтобы держать её ещё и на другом компьютере.`),
+        el('h3', {}, 'Расписание'),
+        el('div', {class: 'toolbar'},
+            el('label', {class: 'check'}, enabled, 'каждый день в'), time,
+            el('span', {}, 'хранить последних'), keep,
+            el('button', {onclick: saveSchedule}, 'Сохранить')),
+        el('p', {class: 'muted'}, 'Хранение касается только копий по расписанию: ручные остаются, пока их не удалить.'),
+        s.last_error ? el('p', {class: 'warnings'}, `Копия по расписанию ${humanMoment(s.last_run)} не удалась: ${s.last_error}`) : null,
+        el('div', {class: 'table-wrap', style: 'margin-top: 12px'}, el('table', {},
+            el('thead', {}, el('tr', {}, el('th', {}, 'Когда'), el('th', {}, 'Вид'), el('th', {class: 'num'}, 'Размер'), el('th', {}))),
+            el('tbody', {}, state.backups.length
+                ? state.backups.map(b => el('tr', {},
+                    el('td', {}, humanMoment(b.created)),
+                    el('td', {}, b.scheduled ? 'по расписанию' : 'вручную'),
+                    el('td', {class: 'num'}, formatSize(b.size)),
+                    el('td', {}, el('div', {class: 'toolbar', style: 'margin: 0'},
+                        el('a', {class: 'button', href: `/api/backups/${b.name}`, download: b.name}, 'Скачать'),
+                        el('button', {class: 'danger', onclick: () => remove(b.name)}, 'Удалить')))))
+                : el('tr', {}, el('td', {colspan: 4, class: 'muted'}, 'Копий пока нет'))))));
+}
+
 async function route() {
     const view = document.getElementById('view');
     const [hash, query] = (location.hash || '#/items').split('?');
@@ -2267,6 +2325,8 @@ async function route() {
             await renderRequirements(view, params);
         } else if (hash === '#/users') {
             await renderUsers(view);
+        } else if (hash === '#/backups') {
+            await renderBackups(view);
         } else if (hash === '#/password') {
             await renderPassword(view);
         } else {

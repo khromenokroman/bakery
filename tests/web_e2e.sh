@@ -28,6 +28,7 @@ SCENARIOS=(
     "doc_filter.js|#/docs?from=2026-10-01&to=2026-10-31"
     "item_photo.js|#/items"
     "users.js|#/items"
+    "backups.js|#/items"
 )
 
 failed=0
