@@ -69,13 +69,17 @@ std::vector<Balance> Stock::balances(std::optional<std::string> const &date, std
     return out;
 }
 
-void Stock::check_non_negative(std::vector<std::int64_t> const &items) const {
-    // остаток после каждого момента (дата и время); движения одного момента складываются
-    auto stmt = m_db.prepare("SELECT date, sum(qty) FROM stock_moves WHERE item_id = ? GROUP BY date ORDER BY date");
+void Stock::check_non_negative(std::vector<std::int64_t> const &items, std::string const &from) const {
+    // остаток до from одной суммой, дальше после каждого момента (дата и время); движения одного момента складываются
+    auto before = m_db.prepare("SELECT coalesce(sum(qty), 0) FROM stock_moves INDEXED BY stock_moves_cover WHERE item_id = ?1 AND date < ?2");
+    auto stmt = m_db.prepare("SELECT date, sum(qty) FROM stock_moves WHERE item_id = ?1 AND date >= ?2 GROUP BY date ORDER BY date");
     for (auto const id : items) {
+        before.reset();
+        before.bind(1, id).bind(2, from);
+        before.step();
         stmt.reset();
-        stmt.bind(1, id);
-        std::int64_t balance = 0;
+        stmt.bind(1, id).bind(2, from);
+        std::int64_t balance = before.column_int(0);
         while (stmt.step()) {
             balance += stmt.column_int(1);
             if (balance < 0) {

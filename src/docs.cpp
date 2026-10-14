@@ -376,7 +376,7 @@ void Documents::update(Document const &doc) {
         auto items = old_moved;
         auto const fresh = moved_items(doc.id);
         items.insert(items.end(), fresh.begin(), fresh.end());
-        Stock{m_db}.check_non_negative(items);
+        Stock{m_db}.check_non_negative(items, std::min(moment(old), moment(checked)));
         mark_backdated(old, moment(old));
         mark_backdated(get(doc.id), moment(checked));
     }
@@ -418,7 +418,7 @@ void Documents::post(std::int64_t id) {
     upd.bind(1, id);
     upd.step();
     touch(id, false);
-    Stock{m_db}.check_non_negative(moved_items(id));
+    Stock{m_db}.check_non_negative(moved_items(id), moment(doc));
     mark_backdated(doc, moment(doc));
     tx.commit();
 }
@@ -441,7 +441,7 @@ void Documents::unpost(std::int64_t id) {
     upd.bind(1, id);
     upd.step();
     touch(id, false);
-    Stock{m_db}.check_non_negative(moved);
+    Stock{m_db}.check_non_negative(moved, moment(doc));
     mark_backdated(doc, moment(doc));
     tx.commit();
 }
@@ -481,7 +481,7 @@ void Documents::repost(std::int64_t id) {
     write_moves(get(id));
     auto const fresh = moved_items(id);
     items.insert(items.end(), fresh.begin(), fresh.end());
-    Stock{m_db}.check_non_negative(items);
+    Stock{m_db}.check_non_negative(items, moment(doc));
     tx.commit();
 }
 

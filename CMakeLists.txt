@@ -70,6 +70,7 @@ if (BUILD_TESTS)
             tests/options_test.cpp
             tests/period_test.cpp
             tests/users_test.cpp
+            tests/db_test.cpp
             tests/sales_test.cpp
             tests/prices_test.cpp
             tests/report_test.cpp

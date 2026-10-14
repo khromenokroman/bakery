@@ -79,13 +79,18 @@ void Prices::remove_type(std::int64_t id) {
 }
 
 std::optional<std::int64_t> Prices::price(std::int64_t type_id, std::int64_t item_id, std::string const &moment) const {
-    auto stmt = m_db.prepare(std::string(LATEST) + " AND item_id = ?3");
+    // от установок цен назад по времени (индекс docs_type_date), строка позиции - по doc_lines_doc_item:
+    // время не зависит от числа других документов и строк позиции
+    auto stmt = m_db.prepare(
+        "SELECT l.price_kop FROM docs d INDEXED BY docs_type_date CROSS JOIN doc_lines l INDEXED BY doc_lines_doc_item "
+        "ON l.doc_id = d.id AND l.item_id = ?3 WHERE d.type = 'prices' AND d.status = 'posted' AND d.price_type_id = ?1 AND d.date <= ?2 "
+        "ORDER BY d.date DESC, d.id DESC LIMIT 1");
     // одна дата без времени означает конец дня
     stmt.bind(1, type_id).bind(2, moment.size() == 10 ? moment + " 23:59:59" : moment).bind(3, item_id);
     if (!stmt.step()) {
         return std::nullopt;
     }
-    return stmt.column_int(1);
+    return stmt.column_int(0);
 }
 
 std::vector<PriceRow> Prices::price_list(std::int64_t type_id, std::string const &date) const {

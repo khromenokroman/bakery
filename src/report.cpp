@@ -17,10 +17,11 @@ constexpr char const IN_GROUP[] =
     "JOIN sub ON g.parent_id = sub.id) SELECT id FROM sub))";
 
 /// Цена типа ?4 на момент движения m: последняя проведённая установка не позже движения.
+/// От установок цен назад по времени, строка позиции по индексу (doc_id, item_id): не перебирает все строки позиции.
 constexpr char const PRICE_AT_MOVE[] =
-    "(SELECT pl.price_kop FROM doc_lines pl JOIN docs pd ON pd.id = pl.doc_id WHERE pd.type = 'prices' "
-    "AND pd.status = 'posted' AND pd.price_type_id = ?4 AND pl.item_id = m.item_id AND pd.date <= m.date "
-    "ORDER BY pd.date DESC, pd.id DESC LIMIT 1)";
+    "(SELECT pl.price_kop FROM docs pd INDEXED BY docs_type_date CROSS JOIN doc_lines pl INDEXED BY doc_lines_doc_item "
+    "ON pl.doc_id = pd.id AND pl.item_id = m.item_id WHERE pd.type = 'prices' AND pd.status = 'posted' AND pd.price_type_id = ?4 "
+    "AND pd.date <= m.date ORDER BY pd.date DESC, pd.id DESC LIMIT 1)";
 
 /// Цена в строке документа движения m (для реализации - цена продажи).
 constexpr char const LINE_PRICE[] = "(SELECT l.price_kop FROM doc_lines l WHERE l.doc_id = m.doc_id AND l.item_id = m.item_id LIMIT 1)";
@@ -231,16 +232,16 @@ GoodsReport goods_report(Database &db, std::string const &from, std::string cons
     // документы периода с суммами по себестоимости и по типу цен: tp - цена типа на момент движения,
     // lp - цена в строке документа; реализация по типу цен - по цене продажи, разница - переоценка
     std::string const line = price_type ? LINE_PRICE : "NULL";
+    // x материализуется: иначе SQLite подставит подзапрос и будет искать цену заново при каждом упоминании tp
     auto docs = db.prepare(
-        "SELECT d.id, d.type, d.number, d.date, coalesce(p.name, ''), sum(x.qty * coalesce(x.cost_kop, 0)), x.qty > 0, "
+        "WITH x AS MATERIALIZED (SELECT m.doc_id, m.qty, m.cost_kop, " + price + " AS tp, " + line +
+        " AS lp FROM stock_moves m JOIN items i ON i.id = m.item_id WHERE m.date >= ?1 AND m.date <= ?2 AND " + std::string(IN_GROUP) +
+        ") SELECT d.id, d.type, d.number, d.date, coalesce(p.name, ''), sum(x.qty * coalesce(x.cost_kop, 0)), x.qty > 0, "
         "coalesce(sum(x.qty * coalesce(CASE WHEN " +
         std::string(SOLD_AT_LINE) + " THEN x.lp ELSE x.tp END, 0)), 0), coalesce(sum(x.tp IS NULL), 0), coalesce(sum(CASE WHEN " + SOLD_AT_LINE +
         " AND x.lp > x.tp THEN -x.qty * (x.lp - x.tp) END), 0), coalesce(sum(CASE WHEN " + SOLD_AT_LINE +
         " AND x.lp < x.tp THEN x.qty * (x.lp - x.tp) END), 0)"
-        " FROM (SELECT m.doc_id, m.qty, m.cost_kop, " +
-        price + " AS tp, " + line + " AS lp FROM stock_moves m JOIN items i ON i.id = m.item_id WHERE m.date >= ?1 AND m.date <= ?2 AND " +
-        std::string(IN_GROUP) +
-        ") x JOIN docs d ON d.id = x.doc_id LEFT JOIN partners p ON p.id = d.partner_id GROUP BY d.id, x.qty > 0 ORDER BY d.date, d.id");
+        " FROM x JOIN docs d ON d.id = x.doc_id LEFT JOIN partners p ON p.id = d.partner_id GROUP BY d.id, x.qty > 0 ORDER BY d.date, d.id");
     docs.bind(1, begin).bind(2, end);
     bind_group(docs, group);
     if (price_type) {

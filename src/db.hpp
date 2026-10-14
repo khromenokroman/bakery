@@ -17,14 +17,22 @@ class DbError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+class StatementCache;
+
 /**
  * @brief Подготовленный запрос SQLite.
  *
- * Параметры нумеруются с 1, колонки результата с 0, как в API SQLite.
+ * Параметры нумеруются с 1, колонки результата с 0, как в API SQLite. Запрос берётся из кеша соединения
+ * и возвращается в него при уничтожении (сброшенным), поэтому повторная подготовка того же текста дешёвая.
  */
 class Statement {
    public:
-    Statement(sqlite3 *db, std::string_view sql);
+    Statement(sqlite3_stmt *stmt, sqlite3 *db, StatementCache *cache, std::string sql) noexcept;
+    ~Statement();
+    Statement(Statement &&other) noexcept;
+    Statement(Statement const &) = delete;
+    Statement &operator=(Statement const &) = delete;
+    Statement &operator=(Statement &&) = delete;
 
     Statement &bind(int index, std::int64_t value);
     Statement &bind(int index, std::string_view value);
@@ -48,12 +56,10 @@ class Statement {
     [[nodiscard]] std::string column_blob(int column) const;
 
    private:
-    struct Finalizer {
-        void operator()(sqlite3_stmt *stmt) const noexcept;
-    };
-
-    std::unique_ptr<sqlite3_stmt, Finalizer> m_stmt;
+    std::string m_sql;
+    sqlite3_stmt *m_stmt;
     sqlite3 *m_db;
+    StatementCache *m_cache; ///< куда вернуть запрос; nullptr - финализировать
 };
 
 /**
@@ -69,6 +75,9 @@ class Database {
      * @param path путь к файлу базы, ":memory:" для базы в памяти
      */
     explicit Database(std::string const &path);
+    ~Database();
+    Database(Database const &) = delete;
+    Database &operator=(Database const &) = delete;
 
     /// Выполняет один или несколько SQL-операторов без результата.
     void exec(std::string_view sql);
@@ -80,6 +89,9 @@ class Database {
     /// Захватывает базу на время обработки запроса.
     [[nodiscard]] std::unique_lock<std::mutex> lock();
 
+    /// Идёт транзакция (соединение не в режиме автофиксации).
+    [[nodiscard]] bool in_transaction() const;
+
    private:
     struct Closer {
         void operator()(sqlite3 *db) const noexcept;
@@ -87,12 +99,15 @@ class Database {
 
     std::mutex m_mutex;
     std::unique_ptr<sqlite3, Closer> m_db;
+    std::unique_ptr<StatementCache> m_cache; ///< свободные подготовленные запросы по тексту
 };
 
 /**
  * @brief Транзакция с откатом в деструкторе, если не было commit().
  *
- * Начинается с BEGIN IMMEDIATE, чтобы блокировка на запись бралась сразу.
+ * Внешняя начинается с BEGIN IMMEDIATE, чтобы блокировка на запись бралась сразу. Внутри уже идущей
+ * транзакции - точка сохранения (SAVEPOINT): commit() её отпускает, откат возвращает только её
+ * изменения, а итог фиксирует внешняя транзакция.
  */
 class Transaction {
    public:
@@ -104,6 +119,7 @@ class Transaction {
     void commit();
 
    private:
+    std::string m_savepoint; ///< имя точки сохранения; пустое - внешняя транзакция
     Database &m_db;
     bool m_done = false;
 };
