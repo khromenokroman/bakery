@@ -59,6 +59,9 @@ OLD=$(call POST docs "{\"type\":\"order\",\"date\":\"2026-10-01\",\"lines\":[{\"
 PR0=$(call POST docs "{\"type\":\"prices\",\"date\":\"2026-10-01\",\"price_type_id\":$V1,\"lines\":[{\"item_id\":$BREAD,\"price_kop\":4000}]}" | id)
 call POST "docs/$PR0/post" '' >/dev/null
 call PUT period '{"closed_till":"2026-10-05"}' >/dev/null
+# фото батона: PNG 1x1
+base64 -d <<<'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' \
+    | curl -sf -X PUT "$API/items/$BREAD/photo" -H 'Content-Type: image/png' --data-binary @- >/dev/null
 
 PAGES=(
     "items"

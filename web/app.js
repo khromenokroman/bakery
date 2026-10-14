@@ -406,9 +406,81 @@ async function renderItem(view, id) {
             el('label', {class: 'check'}, archived, 'в архиве'),
             el('button', {class: 'primary', onclick: save}, 'Сохранить'),
             el('button', {class: 'danger', onclick: remove}, 'Удалить')),
+        photoSection(item),
         item.kind === 'raw'
             ? el('p', {class: 'muted'}, 'У сырья нет рецептуры.')
             : recipeEditor(item, recipe, all));
+}
+
+// наибольшая сторона фото после уменьшения в браузере, пикселей
+const PHOTO_SIDE = 1600;
+
+/**
+ * Готовит фото к загрузке: большой снимок с телефона уменьшается до PHOTO_SIDE по большей стороне
+ * и пережимается в JPEG; небольшие JPEG, PNG и WebP уходят как есть.
+ */
+async function preparePhoto(file) {
+    let bitmap;
+    try {
+        bitmap = await createImageBitmap(file);
+    } catch (e) {
+        throw new Error(`не удалось прочитать «${file.name}»: нужна картинка JPEG, PNG или WebP`);
+    }
+    const scale = Math.min(1, PHOTO_SIDE / Math.max(bitmap.width, bitmap.height));
+    if (scale === 1 && file.size <= 1024 * 1024 && ['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+        return file;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const ctx = canvas.getContext('2d');
+    // прозрачный фон PNG в JPEG стал бы чёрным
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+}
+
+/**
+ * Фото позиции: картинка (по щелчку открывается целиком), загрузка или замена и удаление.
+ */
+function photoSection(item) {
+    const url = `/api/items/${item.id}/photo?v=${item.photo}`;
+    const input = el('input', {
+        type: 'file', accept: 'image/*', hidden: true,
+        onchange: async () => {
+            const file = input.files[0];
+            if (!file) {
+                return;
+            }
+            if (await attempt(async () => {
+                const body = await preparePhoto(file);
+                const res = await fetch(`/api/items/${item.id}/photo`, {
+                    method: 'PUT', headers: {'Content-Type': body.type || 'application/octet-stream'}, body,
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    throw new Error(data.error || res.status + ' ' + res.statusText);
+                }
+            }, 'Фото загружено')) {
+                route();
+            }
+            input.value = '';
+        },
+    });
+    const remove = async () => {
+        if (confirm(`Удалить фото «${item.name}»?`) && await attempt(() => api('DELETE', `items/${item.id}/photo`), 'Фото удалено')) {
+            route();
+        }
+    };
+    return el('div', {class: 'photo'},
+        item.photo
+            ? el('a', {href: url, target: '_blank', title: 'Открыть целиком'}, el('img', {src: url, alt: item.name}))
+            : el('div', {class: 'photo-empty muted'}, 'Фото нет'),
+        el('div', {class: 'toolbar'},
+            input,
+            el('button', {onclick: () => input.click()}, item.photo ? 'Заменить фото' : 'Загрузить фото'),
+            item.photo ? el('button', {class: 'danger', onclick: remove}, 'Удалить фото') : null));
 }
 
 /**

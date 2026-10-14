@@ -242,6 +242,27 @@ button.danger {
     color: var(--muted);
 }
 
+.photo {
+    margin: 16px 0;
+}
+
+.photo img, .photo-empty {
+    display: block;
+    max-width: min(100%, 360px);
+    max-height: 360px;
+    margin-bottom: 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+}
+
+.photo-empty {
+    width: 240px;
+    max-width: 100%;
+    padding: 48px 0;
+    text-align: center;
+    background: #fff;
+}
+
 a.back {
     display: inline-block;
     margin-bottom: 12px;
