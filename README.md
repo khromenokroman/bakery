@@ -254,7 +254,7 @@ sudo systemctl start bakery
 Скачать пакет своей версии Debian и установить через apt (зависимости apt поставит сам):
 
 ```sh
-sudo apt install ./bakery_0.22.1.0_amd64-debian13.deb
+sudo apt install ./bakery_0.24.0.0_amd64-debian13.deb
 ```
 
 Пакет ставит службу `bakery` и сразу её запускает: веб-интерфейс на http://адрес-сервера:8080/.
@@ -269,6 +269,29 @@ sudo apt install ./bakery_0.22.1.0_amd64-debian13.deb
   схема базы обновится при запуске.
 - `apt remove bakery` останавливает службу, `apt purge bakery` удаляет и настройки. База и пользователь
   `bakery` остаются в обоих случаях: это данные учёта.
+
+### Сброс к чистому состоянию
+
+После пробной работы, чтобы начать учёт с чистого листа: остановить службу, убрать базу и копии
+в сторону и запустить службу снова. Она создаст пустую базу и предложит создать администратора, как
+при первом запуске. Номенклатура, документы, цены, клиенты, реквизиты, пользователи и резервные
+копии начинаются заново; адрес и порт в `/etc/default/bakery` остаются.
+
+```sh
+sudo systemctl stop bakery
+sudo sh -c 'cd /var/lib/bakery && d=trial-$(date +%F-%H%M%S) && mkdir $d && mv bakery.db* backups $d/ 2>/dev/null; ls $d'
+sudo systemctl start bakery
+```
+
+Пробные данные остаются в `/var/lib/bakery/trial-ДАТА` на случай, если что-то из них понадобится
+(вернуть: остановить службу и положить `bakery.db` обратно). Когда они точно не нужны:
+
+```sh
+sudo rm -rf /var/lib/bakery/trial-*
+```
+
+Удалить программу полностью вместе с данными: `sudo apt purge bakery`, затем
+`sudo rm -rf /var/lib/bakery` и `sudo deluser bakery`.
 
 ### Выпуск релиза
 

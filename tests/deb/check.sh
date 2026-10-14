@@ -48,4 +48,11 @@ apt-get purge -y -qq bakery >/dev/null 2>&1 || bad "purge"
 
 apt-get install -y -qq /deb/*.deb >/dev/null 2>&1 || bad "повторная установка"
 wait_http 8080 && [ "$(items 8080 | grep -c Батон)" = 1 ] && ok "повторная установка: служба и прежние данные" || bad "повторная установка"
+
+# сброс к чистому состоянию по README
+systemctl stop bakery
+sh -c 'cd /var/lib/bakery && d=trial-$(date +%F-%H%M%S) && mkdir $d && mv bakery.db* backups $d/ 2>/dev/null; ls $d' >/dev/null
+systemctl start bakery
+wait_http 8080 && curl -sf http://127.0.0.1:8080/api/auth | grep -q '"setup":true' && ok "сброс: пустая база ждёт администратора" || bad "сброс: нет первого запуска"
+ls /var/lib/bakery/trial-*/bakery.db /var/lib/bakery/trial-*/backups >/dev/null 2>&1 && ok "сброс: пробные база и копии отложены" || bad "сброс: пробные данные не сохранены: $(ls -R /var/lib/bakery)"
 exit $fail
