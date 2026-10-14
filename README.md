@@ -26,6 +26,12 @@
 позиция остаётся в старых рецептурах, но в новые не добавляется. Единицу нельзя сменить, если
 в старой единице уже записаны количества (своя рецептура, чужие рецептуры, документы).
 
+В карточке позиции можно прикрепить фотографию, чтобы было видно, как выглядит товар: «Загрузить
+фото», «Заменить фото», «Удалить фото», по щелчку фото открывается целиком. С телефона можно снять
+сразу камерой. Перед загрузкой браузер уменьшает снимок до 1600 точек по большей стороне и пережимает
+в JPEG; сервер принимает JPEG, PNG и WebP до 5 МБ. Фото хранятся в базе вместе с остальными данными
+и попадают в её резервную копию; удаление позиции удаляет и фото.
+
 ## Заявки и расчёт потребности
 
 Заявка: дата, на которую нужно произвести, «от кого» (магазин, имя, телефон) и строки продукции
@@ -284,19 +290,22 @@ sqlite3 bakery.db ".backup bakery-$(date +%F).db"
 
 | Метод | Ответ |
 |---|---|
-| `GET /api/version` | `{"version": "0.18.0.0", "schema": 11}` |
+| `GET /api/version` | `{"version": "0.21.0.0", "schema": 12}` |
 | `GET /api/groups` | `[{"id", "name", "parent_id"}]`, `parent_id` = `null` у верхнего уровня |
 | `POST /api/groups` `{"name", "parent_id"}` | созданная группа, код 201 |
 | `PUT /api/groups/{id}` `{"name", "parent_id"}` | переименование и перенос |
 | `DELETE /api/groups/{id}` | удаление пустой группы |
 | `GET /api/items?kind=raw\|semi\|product&archived=1&group={id}` | список позиций; `group` с подгруппами |
 | `POST /api/items` `{"name", "kind", "unit", "group_id"}` | созданная позиция, код 201 |
-| `GET /api/items/{id}` | `{"id", "name", "kind", "unit", "archived", "has_recipe", "group_id"}` |
+| `GET /api/items/{id}` | `{"id", "name", "kind", "unit", "archived", "has_recipe", "group_id", "vat_rate", "photo"}`; `photo` - метка фото (меняется при замене) или `null` |
 | `PUT /api/items/{id}` | изменение переданных полей из `name`, `kind`, `unit`, `archived`, `group_id` (`null` убирает из группы) |
 | `DELETE /api/items/{id}` | удаление неиспользуемой позиции |
 | `GET /api/items/{id}/recipe` | `{"output_qty", "lines": [{"component_id", "name", "kind", "unit", "qty"}]}` или `null` |
 | `PUT /api/items/{id}/recipe` `{"output_qty", "lines": [{"component_id", "qty"}]}` | замена рецептуры целиком |
 | `DELETE /api/items/{id}/recipe` | удаление рецептуры |
+| `GET /api/items/{id}/photo` | фото с его типом, `ETag` и `Cache-Control: no-cache`; 404, если фото нет |
+| `PUT /api/items/{id}/photo` (тело - файл JPEG, PNG или WebP до 5 МБ) | позиция с новой меткой `photo` |
+| `DELETE /api/items/{id}/photo` | удаление фото, ответ - позиция |
 | `GET /api/docs?type=order,production&from=ГГГГ-ММ-ДД&to=ГГГГ-ММ-ДД` | документы со строками, даты включительно |
 | `POST /api/docs` `{"type", "date", "time", "comment", "price_type_id", "lines": [{"item_id", "qty", "price_kop"}]}` | созданный документ, код 201; `time` "ЧЧ:ММ", по умолчанию 00:00 |
 | `GET /api/docs/{id}` | `{"id", "type", "number", "date", "status", "comment", "lines": [{"item_id", "name", "unit", "qty"}]}` |

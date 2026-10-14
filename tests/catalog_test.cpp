@@ -225,3 +225,59 @@ TEST_F(CatalogTest, ArchivedComponent) {
     auto const cake = add("Кекс", Kind::PRODUCT, Unit::PCS);
     EXPECT_THROW_REASON(m_catalog.set_recipe(cake, make_recipe(1000, {{raisin, 20}})), UserError, "«Изюм» в архиве");
 }
+
+/**
+ * @brief Фотография: формат по содержимому, замена меняет etag, удаление позиции удаляет фото.
+ */
+TEST_F(CatalogTest, Photo) {
+    auto const bread = add("Батон", Kind::PRODUCT, Unit::PCS);
+    EXPECT_FALSE(m_catalog.photo(bread)) << "у новой позиции фото нет";
+    EXPECT_FALSE(m_catalog.get(bread).photo);
+
+    std::string const jpeg = std::string("\xFF\xD8\xFF\xE0", 4) + "jpeg-data";
+    m_catalog.set_photo(bread, jpeg);
+    auto photo = m_catalog.photo(bread);
+    ASSERT_TRUE(photo) << "фото должно сохраниться";
+    EXPECT_EQ(photo->mime, "image/jpeg");
+    EXPECT_EQ(photo->data, jpeg) << "данные должны вернуться байт в байт";
+    ASSERT_TRUE(m_catalog.get(bread).photo) << "позиция должна знать etag фото";
+    EXPECT_EQ(*m_catalog.get(bread).photo, photo->etag);
+    EXPECT_EQ(m_catalog.list({}).front().photo, photo->etag) << "etag есть и в списке";
+
+    std::string const png = std::string("\x89PNG\r\n\x1A\n\0\0", 10);
+    m_catalog.set_photo(bread, png);
+    auto const replaced = m_catalog.photo(bread);
+    ASSERT_TRUE(replaced);
+    EXPECT_EQ(replaced->mime, "image/png") << "замена фото";
+    EXPECT_EQ(replaced->data, png) << "нулевые байты не должны обрезаться";
+    EXPECT_NE(replaced->etag, photo->etag) << "etag должен меняться вместе с фото";
+
+    m_catalog.set_photo(bread, std::string("RIFF\x10\0\0\0WEBPVP8 ", 16));
+    EXPECT_EQ(m_catalog.photo(bread)->mime, "image/webp");
+
+    m_catalog.remove_photo(bread);
+    EXPECT_FALSE(m_catalog.photo(bread)) << "фото удалено";
+    EXPECT_NO_THROW(m_catalog.remove_photo(bread)) << "повторное удаление ничего не делает";
+
+    m_catalog.set_photo(bread, jpeg);
+    m_catalog.remove(bread);
+    auto stmt = m_db.prepare("SELECT count(*) FROM item_photos");
+    stmt.step();
+    EXPECT_EQ(stmt.column_int(0), 0) << "фото удалённой позиции не должно оставаться в базе";
+}
+
+/**
+ * @brief Пустой файл, не картинка, слишком большой файл и несуществующая позиция отклоняются с причиной.
+ */
+TEST_F(CatalogTest, PhotoRejected) {
+    auto const bread = add("Батон", Kind::PRODUCT, Unit::PCS);
+    EXPECT_THROW_REASON(m_catalog.set_photo(bread, ""), UserError, "пустой");
+    EXPECT_THROW_REASON(m_catalog.set_photo(bread, "GIF89a"), UserError, "JPEG, PNG или WebP");
+    EXPECT_THROW_REASON(m_catalog.set_photo(bread, "%PDF-1.7"), UserError, "«Батон»");
+    std::string big(MAX_PHOTO_BYTES + 1, 'x');
+    big.replace(0, 3, "\xFF\xD8\xFF");
+    EXPECT_THROW_REASON(m_catalog.set_photo(bread, big), UserError, "не больше 5 МБ");
+    EXPECT_FALSE(m_catalog.photo(bread)) << "после отказов фото нет";
+    EXPECT_THROW(m_catalog.set_photo(9999, "\xFF\xD8\xFF"), NotFoundError);
+    EXPECT_THROW((void)m_catalog.photo(9999), NotFoundError);
+}

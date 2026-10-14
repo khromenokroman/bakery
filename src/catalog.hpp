@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -40,6 +41,7 @@ struct Item {
     std::string name;
     std::optional<std::int64_t> group_id; ///< пустой - без группы
     std::optional<int> vat_rate;          ///< ставка НДС, %; пустая - без НДС
+    std::optional<std::string> photo;     ///< только для чтения: etag фотографии, пусто - фото нет
     std::int64_t id{};
     Kind kind = Kind::RAW;
     Unit unit = Unit::KG;
@@ -65,6 +67,18 @@ struct Recipe {
     std::vector<RecipeLine> lines;
     std::int64_t output_qty{};
 };
+
+/**
+ * @brief Фотография позиции.
+ */
+struct Photo {
+    std::string mime; ///< image/jpeg, image/png или image/webp
+    std::string etag; ///< хеш содержимого: меняется вместе с фото
+    std::string data;
+};
+
+/// Наибольший размер фотографии, байт.
+constexpr std::size_t MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 
 /**
  * @brief Фильтр списка номенклатуры.
@@ -127,6 +141,24 @@ class Catalog {
 
     /// Удаляет рецептуру; если её нет, ничего не делает.
     void remove_recipe(std::int64_t item_id);
+
+    /**
+     * @return фотография позиции или nullopt, если её нет
+     * @throws NotFoundError нет позиции
+     */
+    [[nodiscard]] std::optional<Photo> photo(std::int64_t item_id) const;
+
+    /**
+     * @brief Заменяет фотографию позиции; формат определяется по содержимому.
+     * @throws NotFoundError нет позиции; UserError пустой файл, больше MAX_PHOTO_BYTES, не JPEG, PNG или WebP
+     */
+    void set_photo(std::int64_t item_id, std::string_view data);
+
+    /**
+     * @brief Удаляет фотографию; если её нет, ничего не делает.
+     * @throws NotFoundError нет позиции
+     */
+    void remove_photo(std::int64_t item_id);
 
    private:
     /// @throws NotFoundError если группа указана, но её нет

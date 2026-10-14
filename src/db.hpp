@@ -29,6 +29,8 @@ class Statement {
     Statement &bind(int index, std::int64_t value);
     Statement &bind(int index, std::string_view value);
     Statement &bind_null(int index);
+    /// Двоичные данные (BLOB).
+    Statement &bind_blob(int index, std::string_view data);
 
     /**
      * @brief Выполняет очередной шаг запроса.
@@ -42,6 +44,8 @@ class Statement {
     [[nodiscard]] std::int64_t column_int(int column) const;
     [[nodiscard]] std::string column_text(int column) const;
     [[nodiscard]] bool column_is_null(int column) const;
+    /// Двоичные данные колонки (BLOB); пустая строка для NULL.
+    [[nodiscard]] std::string column_blob(int column) const;
 
    private:
     struct Finalizer {

@@ -41,6 +41,13 @@ Statement &Statement::bind_null(int index) {
     return *this;
 }
 
+Statement &Statement::bind_blob(int index, std::string_view data) {
+    if (sqlite3_bind_blob(m_stmt.get(), index, data.data(), static_cast<int>(data.size()), SQLITE_TRANSIENT) != SQLITE_OK) {
+        fail(m_db, "ошибка привязки параметра");
+    }
+    return *this;
+}
+
 bool Statement::step() {
     auto const rc = sqlite3_step(m_stmt.get());
     if (rc == SQLITE_ROW) {
@@ -68,6 +75,14 @@ std::string Statement::column_text(int column) const {
 }
 
 bool Statement::column_is_null(int column) const { return sqlite3_column_type(m_stmt.get(), column) == SQLITE_NULL; }
+
+std::string Statement::column_blob(int column) const {
+    auto const *data = static_cast<char const *>(sqlite3_column_blob(m_stmt.get(), column));
+    if (data == nullptr) {
+        return {};
+    }
+    return {data, static_cast<std::size_t>(sqlite3_column_bytes(m_stmt.get(), column))};
+}
 
 void Database::Closer::operator()(sqlite3 *db) const noexcept { sqlite3_close_v2(db); }
 

@@ -679,3 +679,49 @@ TEST(ApiPeriod, CloseAndReject) {
     ASSERT_EQ(r.status, 200) << r.body;
     EXPECT_TRUE(r.body.at("closed_till").is_null()) << "null открывает все периоды: " << r.body;
 }
+
+/**
+ * @brief Фото позиции: загрузка телом запроса, отдача с типом и ETag, 304 по If-None-Match, отказ не картинке,
+ * удаление; запрос больше предела отклоняется 413 с текстом.
+ */
+TEST(ApiCatalog, Photo) {
+    TestServer srv;
+    auto const id = CALL(srv, "POST", "/api/items", {{"name", "Батон"}, {"kind", "product"}, {"unit", "pcs"}}).body.at("id").get<std::int64_t>();
+    auto const path = "/api/items/" + std::to_string(id) + "/photo";
+    EXPECT_TRUE(CALL(srv, "GET", "/api/items/" + std::to_string(id)).body.at("photo").is_null()) << "фото ещё нет";
+    EXPECT_EQ(CALL(srv, "GET", path).status, 404) << "GET фото, которого нет";
+
+    auto cli = srv.client();
+    std::string const png = std::string("\x89PNG\r\n\x1A\n\0\0\0\rIHDR", 16);
+    auto put = cli.Put(path, png, "image/png");
+    ASSERT_TRUE(put) << httplib::to_string(put.error());
+    ASSERT_EQ(put->status, 200) << put->body;
+    auto const etag = nlohmann::json::parse(put->body).at("photo");
+    ASSERT_TRUE(etag.is_string()) << "ответ PUT - позиция с etag фото: " << put->body;
+
+    auto got = cli.Get(path);
+    ASSERT_TRUE(got);
+    EXPECT_EQ(got->status, 200);
+    EXPECT_EQ(got->get_header_value("Content-Type"), "image/png");
+    EXPECT_EQ(got->body, png) << "фото должно вернуться байт в байт";
+    EXPECT_EQ(got->get_header_value("ETag"), "\"" + etag.get<std::string>() + "\"");
+
+    auto cached = cli.Get(path, {{"If-None-Match", got->get_header_value("ETag")}});
+    ASSERT_TRUE(cached);
+    EXPECT_EQ(cached->status, 304) << "браузер с актуальным фото получает 304";
+
+    put = cli.Put(path, "<svg/>", "image/svg+xml");
+    ASSERT_TRUE(put);
+    EXPECT_EQ(put->status, 400) << put->body;
+    EXPECT_THAT(put->body, HasSubstr("JPEG, PNG или WebP"));
+
+    put = cli.Put(path, std::string(11 * 1024 * 1024, 'x'), "image/jpeg");
+    ASSERT_TRUE(put) << httplib::to_string(put.error());
+    EXPECT_EQ(put->status, 413) << "больше предела запроса";
+    EXPECT_THAT(put->body, HasSubstr("запрос больше 10 МБ"));
+
+    auto const removed = CALL(srv, "DELETE", path);
+    EXPECT_EQ(removed.status, 200) << removed.body;
+    EXPECT_TRUE(removed.body.at("photo").is_null()) << removed.body;
+    EXPECT_EQ(CALL(srv, "GET", path).status, 404) << "после удаления фото нет";
+}

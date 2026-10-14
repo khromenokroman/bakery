@@ -62,6 +62,7 @@ nlohmann::json to_json(Item const &item) {
         {"has_recipe", item.has_recipe},
         {"group_id", item.group_id ? nlohmann::json(*item.group_id) : nlohmann::json(nullptr)},
         {"vat_rate", item.vat_rate ? nlohmann::json(*item.vat_rate) : nlohmann::json(nullptr)},
+        {"photo", item.photo ? nlohmann::json(*item.photo) : nlohmann::json(nullptr)},
     };
 }
 

@@ -8,7 +8,7 @@
 namespace {
 
 /// Миграции схемы. Применённую миграцию не менять: изменения только новой миграцией в конце.
-constexpr std::array<std::string_view, 11> MIGRATIONS = {
+constexpr std::array<std::string_view, 12> MIGRATIONS = {
     // 1: справочники, документы, движения склада
     R"sql(
 CREATE TABLE items (
@@ -186,6 +186,16 @@ CREATE TABLE repost (
     epoch INTEGER NOT NULL DEFAULT 0
 );
 INSERT INTO repost (id) VALUES (1);
+)sql",
+    // 12: фотография позиции; отдельная таблица, чтобы списки номенклатуры не читали картинки;
+    // etag - хеш содержимого для кеша браузера
+    R"sql(
+CREATE TABLE item_photos (
+    item_id INTEGER PRIMARY KEY REFERENCES items (id) ON DELETE CASCADE,
+    mime TEXT NOT NULL,
+    etag TEXT NOT NULL,
+    data BLOB NOT NULL
+);
 )sql",
 };
 

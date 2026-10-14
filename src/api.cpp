@@ -21,6 +21,9 @@ namespace {
 
 constexpr char const JSON_TYPE[] = "application/json; charset=utf-8";
 
+/// Наибольший размер тела запроса: фотография с запасом; больше сервер не читает и отвечает 413.
+constexpr std::size_t MAX_REQUEST_BYTES = 2 * MAX_PHOTO_BYTES;
+
 void send_json(httplib::Response &res, nlohmann::json const &body, int status = 200) {
     res.status = status;
     res.set_content(body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), JSON_TYPE);
@@ -98,6 +101,7 @@ Api::Handler Api::guarded(Handler handler) {
 }
 
 void Api::register_routes(httplib::Server &server) {
+    server.set_payload_max_length(MAX_REQUEST_BYTES);
     server.Get("/api/version", guarded([this](httplib::Request const &, httplib::Response &res) {
                    send_json(res, {{"version", BAKERY_VERSION}, {"schema", current_schema_version(m_db)}});
                }));
@@ -157,7 +161,10 @@ void Api::register_routes(httplib::Server &server) {
 
     server.set_error_handler([](httplib::Request const &req, httplib::Response &res) {
         if (req.path.starts_with("/api/") && res.body.empty()) {
-            send_error(res, res.status, res.status == 404 ? "нет такого метода: " + req.method + " " + req.path : "ошибка запроса");
+            send_error(res, res.status,
+                       res.status == 404   ? "нет такого метода: " + req.method + " " + req.path
+                       : res.status == 413 ? "запрос больше " + std::to_string(MAX_REQUEST_BYTES / 1024 / 1024) + " МБ"
+                                           : "ошибка запроса");
         }
     });
 }
@@ -218,6 +225,34 @@ void Api::register_catalog(httplib::Server &server) {
                    m_catalog.set_recipe(id, recipe_from_json(parse_object(req.body)));
                    send_json(res, to_json(*m_catalog.recipe(id)));
                }));
+
+    server.Get("/api/items/:id/photo", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto const photo = m_catalog.photo(path_id(req));
+                   if (!photo) {
+                       throw NotFoundError("у позиции нет фотографии");
+                   }
+                   // браузер проверяет кеш по ETag при каждом показе: фото могли заменить
+                   auto const etag = "\"" + photo->etag + "\"";
+                   res.set_header("ETag", etag);
+                   res.set_header("Cache-Control", "no-cache");
+                   if (req.get_header_value("If-None-Match") == etag) {
+                       res.status = 304;
+                       return;
+                   }
+                   res.set_content(photo->data, photo->mime);
+               }));
+
+    server.Put("/api/items/:id/photo", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   auto const id = path_id(req);
+                   m_catalog.set_photo(id, req.body);
+                   send_json(res, to_json(m_catalog.get(id)));
+               }));
+
+    server.Delete("/api/items/:id/photo", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                      auto const id = path_id(req);
+                      m_catalog.remove_photo(id);
+                      send_json(res, to_json(m_catalog.get(id)));
+                  }));
 
     server.Delete("/api/items/:id/recipe", guarded([this](httplib::Request const &req, httplib::Response &res) {
                       auto const id = path_id(req);

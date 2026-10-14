@@ -1,6 +1,7 @@
 #include "catalog.hpp"
 
 #include <array>
+#include <cstdio>
 #include <map>
 #include <set>
 #include <utility>
@@ -76,12 +77,40 @@ Item read_item(Statement const &stmt) {
     if (!stmt.column_is_null(7)) {
         item.vat_rate = static_cast<int>(stmt.column_int(7));
     }
+    if (!stmt.column_is_null(8)) {
+        item.photo = stmt.column_text(8);
+    }
     return item;
 }
 
 constexpr char const SELECT_ITEM[] =
-    "SELECT i.id, i.name, i.kind, i.unit, i.archived, r.item_id IS NOT NULL, i.group_id, i.vat_rate FROM items i LEFT JOIN recipes r ON r.item_id = "
-    "i.id ";
+    "SELECT i.id, i.name, i.kind, i.unit, i.archived, r.item_id IS NOT NULL, i.group_id, i.vat_rate, p.etag FROM items i "
+    "LEFT JOIN recipes r ON r.item_id = i.id LEFT JOIN item_photos p ON p.item_id = i.id ";
+
+/// Тип картинки по сигнатуре в начале файла; пустой, если формат не поддерживается.
+std::string_view image_mime(std::string_view data) {
+    if (data.starts_with("\xFF\xD8\xFF")) {
+        return "image/jpeg";
+    }
+    if (data.starts_with("\x89PNG\r\n\x1A\n")) {
+        return "image/png";
+    }
+    if (data.size() >= 12 && data.starts_with("RIFF") && data.substr(8, 4) == "WEBP") {
+        return "image/webp";
+    }
+    return {};
+}
+
+/// Хеш FNV-1a 64 содержимого в шестнадцатеричном виде.
+std::string content_hash(std::string_view data) {
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (auto const c : data) {
+        hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
+    }
+    char text[17];
+    std::snprintf(text, sizeof text, "%016llx", static_cast<unsigned long long>(hash));
+    return text;
+}
 
 void check_vat(std::optional<int> rate) {
     if (rate && *rate != 0 && *rate != 5 && *rate != 7 && *rate != 10 && *rate != 20 && *rate != 22) {
@@ -387,4 +416,41 @@ std::string Catalog::names_of(std::vector<std::int64_t> const &ids, std::string_
         out += stmt.step() ? stmt.column_text(0) : "#" + std::to_string(id);
     }
     return out;
+}
+
+std::optional<Photo> Catalog::photo(std::int64_t item_id) const {
+    (void)get(item_id);
+    auto stmt = m_db.prepare("SELECT mime, etag, data FROM item_photos WHERE item_id = ?");
+    stmt.bind(1, item_id);
+    if (!stmt.step()) {
+        return std::nullopt;
+    }
+    return Photo{.mime = stmt.column_text(0), .etag = stmt.column_text(1), .data = stmt.column_blob(2)};
+}
+
+void Catalog::set_photo(std::int64_t item_id, std::string_view data) {
+    auto const item = get(item_id);
+    if (data.empty()) {
+        throw UserError("файл фотографии пустой");
+    }
+    if (data.size() > MAX_PHOTO_BYTES) {
+        throw UserError("фотография " + std::to_string(data.size() / 1024) + " КБ: допустимо не больше " +
+                        std::to_string(MAX_PHOTO_BYTES / 1024 / 1024) + " МБ");
+    }
+    auto const mime = image_mime(data);
+    if (mime.empty()) {
+        throw UserError("фотография для «" + item.name + "» должна быть в формате JPEG, PNG или WebP");
+    }
+    auto stmt = m_db.prepare(
+        "INSERT INTO item_photos (item_id, mime, etag, data) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (item_id) DO UPDATE SET mime = excluded.mime, etag = excluded.etag, data = excluded.data");
+    stmt.bind(1, item_id).bind(2, mime).bind(3, content_hash(data)).bind_blob(4, data);
+    stmt.step();
+}
+
+void Catalog::remove_photo(std::int64_t item_id) {
+    (void)get(item_id);
+    auto stmt = m_db.prepare("DELETE FROM item_photos WHERE item_id = ?");
+    stmt.bind(1, item_id);
+    stmt.step();
 }
