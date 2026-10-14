@@ -970,3 +970,18 @@ TEST(ApiBackups, AdminOnly) {
     EXPECT_EQ(removed.status, 200) << removed.body;
     EXPECT_EQ(removed.body.at("backups").size(), 0U);
 }
+
+/**
+ * @brief Демонстрационная база через API: только при первом запуске, вход под admin, признак demo; повторно -
+ * отказ. Год данных строится десятки секунд, поэтому тест проверяет отказ, а заполнение - Demo.FillsYear.
+ */
+TEST(ApiAuth, DemoOnlyOnFirstRun) {
+    TestServer srv;
+    auto anon = srv.anonymous();
+    auto const res = anon.Post("/api/auth/demo", "{}", "application/json");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 400) << "администратор уже создан: " << res->body;
+    EXPECT_THAT(res->body, HasSubstr("только при первом запуске"));
+    auto const state = nlohmann::json::parse(anon.Get("/api/auth")->body);
+    EXPECT_EQ(state.at("demo"), false) << "обычная база не демонстрационная";
+}

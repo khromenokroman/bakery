@@ -29,6 +29,7 @@ add_library(${PROJECT_NAME}-core STATIC
         src/backups.cpp
         src/catalog.cpp
         src/db.cpp
+        src/demo.cpp
         src/docs.cpp
         src/groups.cpp
         src/json_io.cpp
@@ -70,6 +71,7 @@ if (BUILD_TESTS)
             tests/options_test.cpp
             tests/period_test.cpp
             tests/users_test.cpp
+            tests/demo_test.cpp
             tests/db_test.cpp
             tests/sales_test.cpp
             tests/prices_test.cpp

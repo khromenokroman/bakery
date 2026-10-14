@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
+#include "demo.hpp"
 #include "errors.hpp"
 #include "json_io.hpp"
 #include "period.hpp"
@@ -230,9 +231,10 @@ void Api::register_routes(httplib::Server &server) {
 }
 
 void Api::register_auth(httplib::Server &server) {
-    server.Get("/api/auth", guarded(Access::PUBLIC, [this](httplib::Request const &, httplib::Response &res) {
-                   send_json(res, {{"setup", Users{m_db}.empty()}, {"user", m_user ? to_json(*m_user) : nlohmann::json(nullptr)}});
-               }));
+    server.Get(
+        "/api/auth", guarded(Access::PUBLIC, [this](httplib::Request const &, httplib::Response &res) {
+            send_json(res, {{"setup", Users{m_db}.empty()}, {"demo", is_demo(m_db)}, {"user", m_user ? to_json(*m_user) : nlohmann::json(nullptr)}});
+        }));
 
     server.Post("/api/auth/setup", guarded(Access::PUBLIC, [this](httplib::Request const &req, httplib::Response &res) {
                     auto const j = parse_object(req.body);
@@ -244,6 +246,19 @@ void Api::register_auth(httplib::Server &server) {
                     set_session_cookie(res, users.open_session(id));
                     send_json(res, {{"user", to_json(users.get(id))}}, 201);
                 }));
+
+    server.Post(
+        "/api/auth/demo", guarded(Access::PUBLIC, [this](httplib::Request const &, httplib::Response &res) {
+            // только при первом запуске: заполняет пустую базу и входит под admin
+            Users users{m_db};
+            if (!users.empty()) {
+                throw UserError("пользователи уже есть: демонстрационную базу можно создать только при первом запуске");
+            }
+            auto const stats = fill_demo(m_db, local_now().substr(0, 10));
+            set_session_cookie(res, users.open_session(stats.admin_id));
+            send_json(res, {{"user", to_json(users.get(stats.admin_id))}, {"items", stats.items}, {"partners", stats.partners}, {"docs", stats.docs}},
+                      201);
+        }));
 
     server.Post("/api/auth/login", guarded(Access::PUBLIC, [this](httplib::Request const &req, httplib::Response &res) {
                     auto const j = parse_object(req.body);
