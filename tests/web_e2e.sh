@@ -27,6 +27,7 @@ SCENARIOS=(
     "period.js|#/docs"
     "doc_filter.js|#/docs?from=2026-10-01&to=2026-10-31"
     "item_photo.js|#/items"
+    "users.js|#/items"
 )
 
 failed=0
@@ -41,14 +42,19 @@ for entry in "${SCENARIOS[@]}"; do
         sleep 0.1
     done
     API=http://127.0.0.1:$PORT/api
-    call() { curl -sf -X "$1" "$API/$2" -H 'Content-Type: application/json' -d "$3"; }
+    # сценарии идут под администратором (кроме users.js: он входит сам)
+    ADMIN=$(curl -sf -D - -o /dev/null -X POST "$API/auth/setup" -H 'Content-Type: application/json' \
+        -d '{"login":"admin","name":"Админ","password":"secret1"}' | sed -n 's/^Set-Cookie: \([^;]*\).*/\1/Ip')
+    call() { curl -sf -X "$1" "$API/$2" -H 'Content-Type: application/json' -H "Cookie: $ADMIN" -d "$3"; }
     id() { sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
     BREAD=$(call POST items '{"name":"Батон","kind":"product","unit":"pcs"}' | id)
     CAKE=$(call POST items '{"name":"Торт","kind":"product","unit":"kg"}' | id)
     call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"comment\":\"Колосок\",\"lines\":[{\"item_id\":$BREAD,\"qty\":40000},{\"item_id\":$CAKE,\"qty\":5000}]}" >/dev/null
     call POST docs "{\"type\":\"order\",\"date\":\"2026-10-12\",\"comment\":\"Петрова\",\"lines\":[{\"item_id\":$BREAD,\"qty\":5000}]}" >/dev/null
 
-    if node "$DIR/e2e/drive.js" "http://127.0.0.1:$PORT/$hash" "$DIR/e2e/$script"; then
+    cookie=$ADMIN
+    [ "$script" = users.js ] && cookie=
+    if COOKIE=$cookie node "$DIR/e2e/drive.js" "http://127.0.0.1:$PORT/$hash" "$DIR/e2e/$script"; then
         echo "ok    $script"
     else
         echo "FAIL  $script"

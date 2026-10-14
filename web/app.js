@@ -7,6 +7,26 @@ const UNITS = {kg: 'кг', l: 'л', pcs: 'шт'};
 /**
  * Запрос к API сервера; при ошибке бросает Error с текстом из ответа.
  */
+// вошедший пользователь {id, login, name, role}; null - не вошёл
+let me = null;
+
+const ROLES = {admin: 'Администратор', technologist: 'Технолог', seller: 'Продавец'};
+
+/** Технолог или администратор: меняет справочники, цены, организацию, закрывает период и перепроводит. */
+const canManage = () => Boolean(me && me.role !== 'seller');
+
+/**
+ * Только просмотр: выключает поля ввода и убирает кнопки в root, кроме перечисленных по тексту.
+ */
+function readOnly(root, keep = []) {
+    root.querySelectorAll('input, select, textarea').forEach(e => { e.disabled = true; });
+    root.querySelectorAll('button').forEach(b => {
+        if (!keep.includes(b.textContent.trim())) {
+            b.remove();
+        }
+    });
+}
+
 async function api(method, path, body) {
     const res = await fetch('/api/' + path, {
         method,
@@ -14,10 +34,15 @@ async function api(method, path, body) {
         body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const data = await res.json().catch(() => ({}));
+    if (res.status === 401 && !path.startsWith('auth')) {
+        // сессия истекла или пользователя заблокировали
+        me = null;
+        renderLogin(false);
+    }
     if (!res.ok) {
         throw new Error(data && data.error ? data.error : res.status + ' ' + res.statusText);
     }
-    if (method !== 'GET' && !path.startsWith('repost')) {
+    if (method !== 'GET' && !path.startsWith('repost') && !path.startsWith('auth')) {
         // любое изменение могло быть задним числом
         refreshRepostBanner();
     }
@@ -345,11 +370,15 @@ async function renderItems(view) {
         el('td', {class: 'muted'}, item.group_id ? groupPath(groups, item.group_id) : ''),
         el('td', {}, item.kind === 'raw' ? '' : item.has_recipe ? 'есть' : el('span', {class: 'muted'}, 'нет'))));
 
+    const panel = groupsPanel(groups);
+    if (!canManage()) {
+        panel.querySelector('.toolbar').remove();
+    }
     render(view,
         el('h2', {}, 'Номенклатура'),
-        form,
+        canManage() ? form : null,
         el('div', {class: 'split'},
-            groupsPanel(groups),
+            panel,
             el('div', {class: 'split-main'},
                 el('h3', {style: 'margin-top: 0'}, listState.group ? groupPath(groups, listState.group) : 'Все группы'),
                 tabs,
@@ -410,6 +439,11 @@ async function renderItem(view, id) {
         item.kind === 'raw'
             ? el('p', {class: 'muted'}, 'У сырья нет рецептуры.')
             : recipeEditor(item, recipe, all));
+    if (!canManage()) {
+        // кнопка удаления строки рецептуры остаётся видимой, но выключенной: таблица не съезжает
+        readOnly(view, ['×']);
+        view.querySelectorAll('tbody button').forEach(b => { b.disabled = true; });
+    }
 }
 
 // наибольшая сторона фото после уменьшения в браузере, пикселей
@@ -719,7 +753,9 @@ async function renderDoc(view, id, params) {
     const posted = doc && doc.status === 'posted';
     // документ в закрытом периоде только для просмотра и печати
     const locked = Boolean(doc && period.closed_till && doc.date <= period.closed_till);
-    const editable = !locked;
+    // установку цен продавец только смотрит
+    const forbidden = type === 'prices' && !canManage();
+    const editable = !locked && !forbidden;
     const inDoc = new Set((doc ? doc.lines : []).map(l => l.item_id));
     const candidates = products.filter(p => !p.archived || inDoc.has(p.id));
     const byId = new Map(products.map(p => [p.id, p]));
@@ -1144,6 +1180,9 @@ async function renderDoc(view, id, params) {
                 editable && doc && !posted ? el('button', {class: 'danger', onclick: remove}, 'Удалить') : null)),
         locked ? el('p', {class: 'warnings'}, `Период по ${humanDate(period.closed_till).split(',')[0]} закрыт: документ только для просмотра. `,
             el('a', {href: '#/settings'}, 'Закрытие периода')) : null,
+        forbidden && !locked ? el('p', {class: 'warnings'}, 'Установку цен ведёт технолог: документ только для просмотра.') : null,
+        doc && doc.created_by ? el('p', {class: 'muted authors'}, `Создал: ${doc.created_by}, ${humanMoment(doc.created_at)}`,
+            doc.updated_by && doc.updated_at !== doc.created_at ? `; изменил: ${doc.updated_by}, ${humanMoment(doc.updated_at)}` : '') : null,
         base ? el('p', {},
             'По ', el('a', {href: '#/docs/' + base.id}, `реализации № ${base.number} от ${humanDate(base.date).split(',')[0]}`),
             base.partner_name ? `, клиент ${base.partner_name}` : '') : null,
@@ -1172,11 +1211,11 @@ async function renderDoc(view, id, params) {
                 cols.cost ? el('th', {class: 'num'}, 'Сумма себест., ₽') : null,
                 el('th'))),
             tbody)),
-        cfg.returnOf || locked ? null : el('div', {class: 'toolbar', style: 'margin-top: 8px'},
+        cfg.returnOf || !editable ? null : el('div', {class: 'toolbar', style: 'margin-top: 8px'},
             el('button', {onclick: () => addRow(null).querySelector('select').focus()}, '+ строка')),
         totals);
     update();
-    if (locked) {
+    if (!editable) {
         view.querySelectorAll('.fields input, .fields select, tbody input, tbody select, tbody button').forEach(e => { e.disabled = true; });
     }
 }
@@ -1218,7 +1257,7 @@ async function renderDocs(view, params) {
             el('button', {class: 'primary', onclick: () => { location.hash = '#/docs/new?type=sale'; }}, 'Новая реализация'),
             el('button', {onclick: () => { location.hash = '#/docs/new?type=writeoff'; }}, 'Новое списание'),
             el('button', {onclick: () => { location.hash = '#/docs/new?type=inventory'; }}, 'Новая инвентаризация'),
-            el('button', {onclick: () => { location.hash = '#/docs/new?type=prices'; }}, 'Новая установка цен'),
+            canManage() ? el('button', {onclick: () => { location.hash = '#/docs/new?type=prices'; }}, 'Новая установка цен') : null,
             el('button', {onclick: () => { location.hash = '#/repost'; }}, 'Перепровести документы')),
         el('div', {class: 'toolbar'}, 'с', fromInput, 'по', toInput),
         typeButtons,
@@ -1260,11 +1299,11 @@ async function renderPrices(view, params) {
         el('h2', {}, 'Цены'),
         el('div', {class: 'tabs toolbar'},
             types.map(t => el('button', {class: t.id === current.id ? 'active' : null, onclick: () => go(t.id, date)}, t.name)),
-            el('button', {onclick: addType}, '+ тип цен')),
-        el('div', {class: 'toolbar'},
+            canManage() ? el('button', {onclick: addType}, '+ тип цен') : null),
+        canManage() ? el('div', {class: 'toolbar'},
             el('button', {class: 'primary', onclick: () => { location.hash = `#/docs/new?type=prices&price_type=${current.id}&date=${date}`; }}, 'Новая установка цен'),
             current.system ? null : el('button', {onclick: renameType}, 'Переименовать'),
-            current.system ? null : el('button', {class: 'danger', onclick: removeType}, 'Удалить тип')),
+            current.system ? null : el('button', {class: 'danger', onclick: removeType}, 'Удалить тип')) : null,
         el('div', {class: 'toolbar'},
             'Цены «' + current.name + '» на',
             el('input', {type: 'date', value: date, onchange: e => e.target.value && go(current.id, e.target.value)}),
@@ -1391,6 +1430,10 @@ async function renderSettings(view) {
         el('h3', {}, 'Текст внизу печатных документов'),
         el('div', {class: 'fields'}, el('label', {}, 'Например, условия возврата или контакты', footer)),
         periodSection(period));
+    if (!canManage()) {
+        readOnly(view);
+        view.insertBefore(el('p', {class: 'warnings'}, 'Реквизиты и закрытие периода меняет технолог или администратор.'), view.children[1]);
+    }
 }
 
 /**
@@ -1867,6 +1910,14 @@ async function refreshRepostBanner() {
  */
 async function renderRepost(view, params) {
     const state = await api('GET', 'repost');
+    if (!canManage()) {
+        render(view,
+            el('h2', {}, 'Перепроведение документов'),
+            el('p', {}, state.needed
+                ? `Нужно перепровести документы с ${humanMoment(state.from.moment)} (документов: ${state.count}). Перепроводит технолог или администратор: сообщите им.`
+                : 'Перепроводить нечего.'));
+        return;
+    }
     const start = state.needed ? state.from.moment : isoDate(new Date()) + ' 00:00:00';
     const dateInput = el('input', {type: 'date', value: params.get('date') || start.slice(0, 10)});
     const timeInput = el('input', {type: 'time', value: params.get('time') || start.slice(11, 16)});
@@ -2009,6 +2060,158 @@ async function renderRequirements(view, params) {
 
 // ---------- маршрутизация ----------
 
+// ---------- вход и пользователи ----------
+
+/** Узнаёт, кто вошёл: показывает интерфейс по роли или экран входа. */
+async function start() {
+    let auth;
+    try {
+        auth = await api('GET', 'auth');
+    } catch (e) {
+        showMessage('сервер недоступен: ' + e.message);
+        return;
+    }
+    if (!auth.user) {
+        renderLogin(auth.setup);
+        return;
+    }
+    me = auth.user;
+    document.body.classList.remove('logged-out');
+    const level = {seller: 0, technologist: 1, admin: 2};
+    for (const a of document.querySelectorAll('nav a[data-role]')) {
+        a.hidden = level[me.role] < level[a.dataset.role];
+    }
+    render(document.getElementById('user-menu'),
+        el('a', {href: '#/password', title: 'Сменить пароль'}, me.name || me.login),
+        el('span', {class: 'muted'}, ' ' + ROLES[me.role].toLowerCase() + ' '),
+        el('button', {onclick: logout}, 'Выйти'));
+    route();
+    refreshRepostBanner();
+}
+
+async function logout() {
+    await api('POST', 'auth/logout').catch(() => {});
+    me = null;
+    renderLogin(false);
+}
+
+/**
+ * Экран входа; в пустой базе - создание первого пользователя (администратора).
+ */
+function renderLogin(setup) {
+    document.body.classList.add('logged-out');
+    document.getElementById('repost-banner').hidden = true;
+    const login = el('input', {name: 'login', autocomplete: 'username', required: true, size: 24});
+    const name = el('input', {name: 'name', size: 24, placeholder: 'Как показывать в документах'});
+    const password = el('input', {name: 'password', type: 'password', autocomplete: setup ? 'new-password' : 'current-password', required: true, size: 24});
+    const repeat = el('input', {type: 'password', autocomplete: 'new-password', required: true, size: 24});
+    const form = el('form', {
+        class: 'login',
+        onsubmit: async e => {
+            e.preventDefault();
+            if (setup && password.value !== repeat.value) {
+                showMessage('пароли не совпадают');
+                return;
+            }
+            if (await attempt(() => setup
+                ? api('POST', 'auth/setup', {login: login.value, name: name.value, password: password.value})
+                : api('POST', 'auth/login', {login: login.value, password: password.value}))) {
+                showMessage('');
+                start();
+            }
+        },
+    },
+    el('h2', {}, setup ? 'Первый запуск' : 'Вход'),
+    setup ? el('p', {class: 'muted'}, 'Пользователей ещё нет. Создайте администратора: он заведёт технологов и продавцов в разделе «Пользователи».') : null,
+    el('label', {}, 'Логин', login),
+    setup ? el('label', {}, 'Имя', name) : null,
+    el('label', {}, 'Пароль', password),
+    setup ? el('label', {}, 'Пароль ещё раз', repeat) : null,
+    el('button', {class: 'primary'}, setup ? 'Создать администратора' : 'Войти'));
+    render(document.getElementById('view'), form);
+    login.focus();
+}
+
+/** Смена своего пароля. */
+async function renderPassword(view) {
+    const old = el('input', {type: 'password', autocomplete: 'current-password', size: 24});
+    const fresh = el('input', {type: 'password', autocomplete: 'new-password', size: 24});
+    const repeat = el('input', {type: 'password', autocomplete: 'new-password', size: 24});
+    const save = async () => {
+        if (fresh.value !== repeat.value) {
+            showMessage('новые пароли не совпадают');
+            return;
+        }
+        if (await attempt(() => api('PUT', 'auth/password', {old_password: old.value, password: fresh.value}),
+            'Пароль изменён, на других устройствах нужно войти заново')) {
+            old.value = fresh.value = repeat.value = '';
+        }
+    };
+    render(view,
+        el('h2', {}, 'Пароль'),
+        el('p', {class: 'muted'}, `${me.name || me.login}, ${ROLES[me.role].toLowerCase()}, логин ${me.login}`),
+        el('div', {class: 'fields'},
+            el('label', {}, 'Текущий пароль', old),
+            el('label', {}, 'Новый пароль', fresh),
+            el('label', {}, 'Новый ещё раз', repeat),
+            el('button', {class: 'primary', onclick: save}, 'Сменить пароль')));
+}
+
+/**
+ * Пользователи (администратор): добавление, имя, роль, блокировка, новый пароль.
+ */
+async function renderUsers(view) {
+    const users = await api('GET', 'users');
+    const login = el('input', {placeholder: 'Логин', required: true, size: 16});
+    const name = el('input', {placeholder: 'Имя', size: 20});
+    const role = el('select', {}, options(ROLES, 'seller'));
+    const password = el('input', {type: 'password', placeholder: 'Пароль', autocomplete: 'new-password', required: true, size: 14});
+    const form = el('form', {
+        class: 'inline',
+        onsubmit: async e => {
+            e.preventDefault();
+            if (await attempt(() => api('POST', 'users', {login: login.value, name: name.value, role: role.value, password: password.value}),
+                'Пользователь добавлен')) {
+                route();
+            }
+        },
+    }, login, name, role, password, el('button', {class: 'primary'}, 'Добавить'));
+
+    const rows = users.map(u => {
+        const uname = el('input', {value: u.name, size: 20});
+        const urole = el('select', {}, options(ROLES, u.role));
+        const blocked = el('input', {type: 'checkbox', checked: u.blocked});
+        const save = async () => {
+            if (await attempt(() => api('PUT', `users/${u.id}`, {name: uname.value, role: urole.value, blocked: blocked.checked}), 'Сохранено')) {
+                route();
+            }
+        };
+        const setPassword = async () => {
+            const value = prompt(`Новый пароль для «${u.login}»:`);
+            if (value) {
+                await attempt(() => api('PUT', `users/${u.id}`, {password: value}), `Пароль «${u.login}» изменён`);
+            }
+        };
+        return el('tr', {class: u.blocked ? 'archived' : null},
+            el('td', {}, u.login, u.id === me.id ? el('span', {class: 'muted'}, ' (вы)') : null),
+            el('td', {}, uname),
+            el('td', {}, urole),
+            el('td', {}, el('label', {class: 'check'}, blocked, 'заблокирован')),
+            el('td', {}, el('div', {class: 'toolbar', style: 'margin: 0'},
+                el('button', {class: 'primary', onclick: save}, 'Сохранить'),
+                el('button', {onclick: setPassword}, 'Пароль'))));
+    });
+
+    render(view,
+        el('h2', {}, 'Пользователи'),
+        el('p', {class: 'muted'}, 'Продавец: заявки, поступление, реализация, возврат, списание, инвентаризация, клиенты; номенклатуру, цены и остатки только смотрит. ' +
+            'Технолог: всё, кроме пользователей. Администратор: всё. Заблокированный не может войти.'),
+        form,
+        el('div', {class: 'table-wrap', style: 'margin-top: 12px'}, el('table', {},
+            el('thead', {}, el('tr', {}, el('th', {}, 'Логин'), el('th', {}, 'Имя'), el('th', {}, 'Роль'), el('th', {}, ''), el('th', {}, ''))),
+            el('tbody', {}, rows))));
+}
+
 async function route() {
     const view = document.getElementById('view');
     const [hash, query] = (location.hash || '#/items').split('?');
@@ -2051,6 +2254,10 @@ async function route() {
             await renderRepost(view, params);
         } else if (hash === '#/requirements') {
             await renderRequirements(view, params);
+        } else if (hash === '#/users') {
+            await renderUsers(view);
+        } else if (hash === '#/password') {
+            await renderPassword(view);
         } else {
             await renderItems(view);
         }
@@ -2059,9 +2266,14 @@ async function route() {
     }
 }
 
-window.addEventListener('hashchange', () => { showMessage(''); route(); refreshRepostBanner(); });
-route();
-refreshRepostBanner();
+window.addEventListener('hashchange', () => {
+    showMessage('');
+    if (me) {
+        route();
+        refreshRepostBanner();
+    }
+});
+start();
 
 api('GET', 'version')
     .then(v => document.getElementById('version').textContent = `bakery ${v.version}, схема ${v.schema}`)

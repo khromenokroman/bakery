@@ -242,6 +242,38 @@ button.danger {
     color: var(--muted);
 }
 
+#user-menu {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
+}
+
+#user-menu a {
+    color: var(--accent);
+}
+
+body.logged-out nav, body.logged-out #user-menu {
+    display: none;
+}
+
+form.login {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 320px;
+}
+
+form.login button {
+    align-self: start;
+}
+
+p.authors {
+    margin: 4px 0;
+    font-size: 13px;
+}
+
 .photo {
     margin: 16px 0;
 }

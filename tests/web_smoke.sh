@@ -3,14 +3,17 @@
 # Запускает сервер на временной базе, заполняет её через API и открывает каждую страницу:
 # страница должна нарисовать заголовок <h2>, не показать ошибку и не содержать текста «null».
 #
+# Страницы открываются под администратором, часть ещё под продавцом (SELLER_PAGES) и без входа.
+#
 # Использование: tests/web_smoke.sh <путь к bakery> <каталог web>
-# Браузер берётся из $CHROME, иначе chromium или google-chrome.
+# Браузер берётся из $CHROME, иначе chromium или google-chrome; нужен node (tests/e2e/drive.js).
 set -euo pipefail
 
 BIN=$1
 WEB=$2
 PORT=${PORT:-18099}
-CHROME=${CHROME:-$(command -v chromium || command -v google-chrome || true)}
+export CHROME=${CHROME:-$(command -v chromium || command -v google-chrome || true)}
+DIR=$(cd "$(dirname "$0")" && pwd)
 if [ -z "$CHROME" ]; then
     echo "web_smoke: не найден chromium или google-chrome" >&2
     exit 2
@@ -26,7 +29,13 @@ for _ in $(seq 50); do
 done
 
 API=http://127.0.0.1:$PORT/api
-call() { curl -sf -X "$1" "$API/$2" -H 'Content-Type: application/json' -d "$3"; }
+# без входа: страница первого запуска
+dump_page() { COOKIE=$1 node "$DIR/e2e/drive.js" "http://127.0.0.1:$PORT/#/$2" --dump 2>/dev/null || true; }
+SETUP_DOM=$(dump_page "" items)
+# администратор, его сессия для curl и браузера
+ADMIN=$(curl -sf -D - -o /dev/null -X POST "$API/auth/setup" -H 'Content-Type: application/json' \
+    -d '{"login":"admin","name":"Админ","password":"secret1"}' | sed -n 's/^Set-Cookie: \([^;]*\).*/\1/Ip')
+call() { curl -sf -X "$1" "$API/$2" -H 'Content-Type: application/json' -H "Cookie: $ADMIN" -d "$3"; }
 id() { sed -n 's/.*"id":\([0-9]*\).*/\1/p'; }
 
 PASTRY=$(call POST groups '{"name":"Кондитерка"}' | id)
@@ -61,7 +70,10 @@ call POST "docs/$PR0/post" '' >/dev/null
 call PUT period '{"closed_till":"2026-10-05"}' >/dev/null
 # фото батона: PNG 1x1
 base64 -d <<<'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' \
-    | curl -sf -X PUT "$API/items/$BREAD/photo" -H 'Content-Type: image/png' --data-binary @- >/dev/null
+    | curl -sf -X PUT "$API/items/$BREAD/photo" -H 'Content-Type: image/png' -H "Cookie: $ADMIN" --data-binary @- >/dev/null
+call POST users '{"login":"olga","name":"Ольга","role":"seller","password":"secret1"}' >/dev/null
+SELLER=$(curl -sf -D - -o /dev/null -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+    -d '{"login":"olga","password":"secret1"}' | sed -n 's/^Set-Cookie: \([^;]*\).*/\1/Ip')
 
 PAGES=(
     "items"
@@ -113,23 +125,55 @@ PAGES=(
     "repost?date=2026-10-12&time=08:00"
     "orders/$OLD"
     "docs/$PR0"
+    "users"
+    "password"
+)
+SELLER_PAGES=(
+    "items"
+    "items/$BREAD"
+    "docs"
+    "docs/$PR"
+    "docs/$SALE2"
+    "prices"
+    "settings"
+    "repost"
+    "password"
 )
 
 failed=0
-for page in "${PAGES[@]}"; do
-    dom=$("$CHROME" --headless=new --disable-gpu --no-sandbox --virtual-time-budget=3000 --dump-dom \
-        "http://127.0.0.1:$PORT/#/$page" 2>/dev/null || true)
+check() {
+    local who=$1 cookie=$2 page=$3
+    dom=$(dump_page "$cookie" "$page")
     main=$(tr -d '\n' <<<"$dom" | grep -o '<main.*</main>' || true)
     message=$(grep -oE '<div id="message"[^>]*>[^<]*' <<<"$dom" || true)
     problems=()
     grep -qE '<h2|class="form-sheet' <<<"$main" || problems+=("страница не нарисована (нет <h2> и листа формы)")
     grep -q 'hidden' <<<"$message" || problems+=("показана ошибка: ${message#*>}")
+    grep -q 'class="login"' <<<"$main" && problems+=("показана форма входа")
     grep -qE '>[^<]*null[^<]*<' <<<"$main" && problems+=("в тексте есть null")
     if [ ${#problems[@]} -eq 0 ]; then
-        echo "ok    #/$page"
+        echo "ok    $who #/$page"
     else
         failed=1
-        printf 'FAIL  #/%s: %s\n' "$page" "$(IFS=';'; echo "${problems[*]}")"
+        printf 'FAIL  %s #/%s: %s\n' "$who" "$page" "$(IFS=';'; echo "${problems[*]}")"
     fi
+}
+if grep -q 'Создать администратора' <<<"$SETUP_DOM"; then
+    echo "ok    пустая база: форма первого запуска"
+else
+    failed=1
+    echo "FAIL  пустая база: нет формы первого запуска"
+fi
+for page in "${PAGES[@]}"; do
+    check admin "$ADMIN" "$page"
 done
+for page in "${SELLER_PAGES[@]}"; do
+    check seller "$SELLER" "$page"
+done
+if grep -q '>Войти<' <<<"$(dump_page "" items)"; then
+    echo "ok    без входа: форма входа"
+else
+    failed=1
+    echo "FAIL  без входа: нет формы входа"
+fi
 exit $failed

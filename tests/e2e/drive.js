@@ -1,10 +1,13 @@
-// Драйвер Chrome по CDP через --remote-debugging-pipe без зависимостей: node drive.js <url> <scenario.js>
+// Драйвер Chrome по CDP через --remote-debugging-pipe без зависимостей: node drive.js <url> <scenario.js | --dump>
 // Сценарий - тело async-функции в странице с помощниками sleep, btn(текст), expect(условие, текст).
 // Код возврата 1, если сценарий бросил исключение; печатается журнал log.
+// --dump вместо сценария печатает DOM страницы после загрузки.
+// COOKIE=bakery_session=... ставит cookie сессии до открытия страницы (вход без формы).
 const {spawn} = require('child_process');
 const fs = require('fs');
 const [url, scenarioFile] = process.argv.slice(2);
-const scenario = fs.readFileSync(scenarioFile, 'utf8');
+const dump = scenarioFile === '--dump';
+const scenario = dump ? '' : fs.readFileSync(scenarioFile, 'utf8');
 const chrome = spawn(process.env.CHROME || 'google-chrome', ['--headless=new', '--disable-gpu', '--no-sandbox', '--remote-debugging-pipe', 'about:blank'],
     {stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe']});
 const out = chrome.stdio[3], inp = chrome.stdio[4];
@@ -26,8 +29,18 @@ const send = (method, params = {}, sessionId) => new Promise(res => {
     const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
     await send('Runtime.enable', {}, sessionId);
     await send('Page.enable', {}, sessionId);
+    if (process.env.COOKIE) {
+        const [name, value] = process.env.COOKIE.split(/=(.*)/);
+        await send('Network.setCookie', {name, value, url}, sessionId);
+    }
     await send('Page.navigate', {url}, sessionId);
     await new Promise(r => setTimeout(r, 1500));
+    if (dump) {
+        const d = await send('Runtime.evaluate', {expression: 'document.documentElement.outerHTML', returnByValue: true}, sessionId);
+        console.log(d.result.result.value);
+        chrome.kill();
+        process.exit(0);
+    }
     setTimeout(() => { console.log('    ОШИБКА: сценарий не завершился за 20 с'); chrome.kill(); process.exit(1); }, 20000);
     const r = await send('Runtime.evaluate', {
         expression: `(async () => { const sleep = ms => new Promise(r => setTimeout(r, ms));
