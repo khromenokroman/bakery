@@ -37,7 +37,7 @@ async function api(method, path, body) {
     if (res.status === 401 && !path.startsWith('auth')) {
         // сессия истекла или пользователя заблокировали
         me = null;
-        renderLogin(false);
+        start();
     }
     if (!res.ok) {
         throw new Error(data && data.error ? data.error : res.status + ' ' + res.statusText);
@@ -2124,8 +2124,14 @@ async function start() {
         showMessage('сервер недоступен: ' + e.message);
         return;
     }
+    const banner = document.getElementById('demo-banner');
+    banner.hidden = !auth.demo;
+    if (auth.demo) {
+        render(banner, 'Демонстрационная база: данные вымышленные. ',
+            el('a', {href: 'https://github.com/khromenokroman/bakery#сброс-к-чистому-состоянию', target: '_blank'}, 'Как начать учёт с чистого листа'));
+    }
     if (!auth.user) {
-        renderLogin(auth.setup);
+        renderLogin(auth.setup, auth.demo);
         return;
     }
     me = auth.user;
@@ -2145,13 +2151,14 @@ async function start() {
 async function logout() {
     await api('POST', 'auth/logout').catch(() => {});
     me = null;
-    renderLogin(false);
+    // экран входа - с сервера: в демонстрационной базе он подсказывает логины
+    start();
 }
 
 /**
  * Экран входа; в пустой базе - создание первого пользователя (администратора).
  */
-function renderLogin(setup) {
+function renderLogin(setup, demo = false) {
     document.body.classList.add('logged-out');
     document.getElementById('repost-banner').hidden = true;
     const login = el('input', {name: 'login', autocomplete: 'username', required: true, size: 24});
@@ -2180,8 +2187,28 @@ function renderLogin(setup) {
     setup ? el('label', {}, 'Имя', name) : null,
     el('label', {}, 'Пароль', password),
     setup ? el('label', {}, 'Пароль ещё раз', repeat) : null,
-    el('button', {class: 'primary'}, setup ? 'Создать администратора' : 'Войти'));
-    render(document.getElementById('view'), form);
+    el('button', {class: 'primary'}, setup ? 'Создать администратора' : 'Войти'),
+    demo && !setup ? el('p', {class: 'muted'}, 'Демонстрационная база: логины admin (администратор), tech (технолог), seller (продавец), пароль demo123.') : null);
+
+    // при первом запуске можно сначала посмотреть программу на заполненной базе
+    const demoButton = el('button', {}, 'Попробовать на демонстрационной базе');
+    const demoText = el('p', {class: 'muted'}, 'Около 380 позиций с рецептурами, 100 клиентов, документы за год до сегодняшнего дня: ' +
+        'заявки, поступления, реализации, возвраты, списания, инвентаризации, переоценки. Вход под администратором; ' +
+        'для технолога и продавца - tech и seller, пароль demo123. Потом базу можно сбросить и начать учёт с чистого листа (README).');
+    demoButton.addEventListener('click', async () => {
+        demoButton.disabled = true;
+        demoButton.textContent = 'Заполняю демонстрационную базу, это займёт до минуты…';
+        if (await attempt(() => api('POST', 'auth/demo'))) {
+            showMessage('');
+            location.hash = '#/docs';
+            start();
+        } else {
+            demoButton.disabled = false;
+            demoButton.textContent = 'Попробовать на демонстрационной базе';
+        }
+    });
+    render(document.getElementById('view'), form,
+        setup ? el('div', {class: 'demo-offer'}, el('h3', {}, 'Сначала посмотреть?'), demoText, demoButton) : null);
     login.focus();
 }
 

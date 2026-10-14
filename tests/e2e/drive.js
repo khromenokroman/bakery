@@ -3,6 +3,7 @@
 // Код возврата 1, если сценарий бросил исключение; печатается журнал log.
 // --dump вместо сценария печатает DOM страницы после загрузки.
 // COOKIE=bakery_session=... ставит cookie сессии до открытия страницы (вход без формы).
+// E2E_TIMEOUT - предел сценария в секундах (по умолчанию 20).
 const {spawn} = require('child_process');
 const fs = require('fs');
 const [url, scenarioFile] = process.argv.slice(2);
@@ -41,7 +42,8 @@ const send = (method, params = {}, sessionId) => new Promise(res => {
         chrome.kill();
         process.exit(0);
     }
-    setTimeout(() => { console.log('    ОШИБКА: сценарий не завершился за 20 с'); chrome.kill(); process.exit(1); }, 20000);
+    const limit = Number(process.env.E2E_TIMEOUT || 20);
+    setTimeout(() => { console.log(`    ОШИБКА: сценарий не завершился за ${limit} с`); chrome.kill(); process.exit(1); }, limit * 1000);
     const r = await send('Runtime.evaluate', {
         expression: `(async () => { const sleep = ms => new Promise(r => setTimeout(r, ms));
             const btn = t => [...document.querySelectorAll('button')].find(b => b.textContent.trim() === t);

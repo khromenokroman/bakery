@@ -265,6 +265,24 @@ body.logged-out nav, body.logged-out #user-menu {
     display: none;
 }
 
+#demo-banner {
+    padding: 6px 16px;
+    background: #e8f0fe;
+    color: #1a3d7c;
+    font-size: 14px;
+}
+
+#demo-banner a {
+    color: inherit;
+}
+
+.demo-offer {
+    max-width: 480px;
+    margin-top: 32px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+}
+
 form.login {
     display: flex;
     flex-direction: column;

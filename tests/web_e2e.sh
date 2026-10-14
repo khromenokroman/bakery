@@ -29,6 +29,7 @@ SCENARIOS=(
     "item_photo.js|#/items"
     "users.js|#/items"
     "backups.js|#/items"
+    "demo.js|#/"
 )
 
 failed=0
@@ -43,6 +44,18 @@ for entry in "${SCENARIOS[@]}"; do
         sleep 0.1
     done
     API=http://127.0.0.1:$PORT/api
+    if [ "$script" = demo.js ]; then
+        # демонстрационная база создаётся из пустой: без начальных данных, заполнение - до минуты
+        if E2E_TIMEOUT=180 node "$DIR/e2e/drive.js" "http://127.0.0.1:$PORT/$hash" "$DIR/e2e/$script"; then
+            echo "ok    $script"
+        else
+            echo "FAIL  $script"
+            failed=1
+        fi
+        kill $PID; wait $PID 2>/dev/null || true
+        rm -rf "$TMP"
+        continue
+    fi
     # сценарии идут под администратором (кроме users.js: он входит сам)
     ADMIN=$(curl -sf -D - -o /dev/null -X POST "$API/auth/setup" -H 'Content-Type: application/json' \
         -d '{"login":"admin","name":"Админ","password":"secret1"}' | sed -n 's/^Set-Cookie: \([^;]*\).*/\1/Ip')
