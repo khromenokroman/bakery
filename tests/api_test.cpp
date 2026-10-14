@@ -3,6 +3,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <httplib.h>
+#include <unistd.h>
 
 #include <chrono>
 #include <filesystem>
@@ -25,7 +26,10 @@ class TestServer {
    public:
     explicit TestServer(std::string const &web_dir = {}) : m_db{":memory:"} {
         migrate(m_db);
-        m_api = std::make_unique<Api>(m_db, web_dir);
+        m_backup_dir = std::filesystem::temp_directory_path() /
+                       ("bakery-api-backups-" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "-" + std::to_string(::getpid()));
+        std::filesystem::remove_all(m_backup_dir);
+        m_api = std::make_unique<Api>(m_db, web_dir, m_backup_dir.string());
         m_api->register_routes(m_server);
         m_port = m_server.bind_to_any_port("127.0.0.1");
         m_thread = std::thread{[this] { m_server.listen_after_bind(); }};
@@ -48,6 +52,7 @@ class TestServer {
     ~TestServer() {
         m_server.stop();
         m_thread.join();
+        std::filesystem::remove_all(m_backup_dir);
     }
 
     /// Клиент с сессией администратора.
@@ -68,6 +73,7 @@ class TestServer {
     Database m_db;
     std::unique_ptr<Api> m_api;
     std::thread m_thread;
+    std::filesystem::path m_backup_dir;
     std::string m_cookie;
     int m_port = 0;
 };
@@ -908,4 +914,42 @@ TEST(ApiAuth, DocumentAuthor) {
     auto const body = nlohmann::json::parse(posted->body);
     EXPECT_EQ(body.at("created_by"), "Админ") << posted->body;
     EXPECT_EQ(body.at("updated_by"), "Ольга") << posted->body;
+}
+
+/**
+ * @brief Резервные копии только администратору: копия сейчас, скачивание файла SQLite, расписание, удаление.
+ */
+TEST(ApiBackups, AdminOnly) {
+    TestServer srv;
+    CALL(srv, "POST", "/api/users", {{"login", "tanya"}, {"role", "technologist"}, {"password", "secret1"}});
+    auto tech = srv.client_as(login_as(srv, "tanya", "secret1"));
+    EXPECT_EQ(status_of(tech, "GET", "/api/backups"), 403) << "технологу копии недоступны";
+    EXPECT_EQ(status_of(tech, "POST", "/api/backups"), 403);
+
+    auto const created = CALL(srv, "POST", "/api/backups");
+    ASSERT_EQ(created.status, 201) << created.body;
+    auto const name = created.body.at("created").get<std::string>();
+    EXPECT_THAT(name, testing::MatchesRegex("bakery-[0-9]{8}-[0-9]{6}-manual\\.db"));
+    ASSERT_EQ(created.body.at("backups").size(), 1U) << created.body;
+    EXPECT_FALSE(created.body.at("schedule").at("enabled").get<bool>());
+
+    auto cli = srv.client();
+    auto const file = cli.Get("/api/backups/" + name);
+    ASSERT_TRUE(file);
+    EXPECT_EQ(file->status, 200);
+    EXPECT_THAT(file->body, testing::StartsWith(std::string("SQLite format 3\0", 16))) << "скачивается файл базы";
+    EXPECT_THAT(file->get_header_value("Content-Disposition"), HasSubstr(name));
+    EXPECT_EQ(status_of(tech, "GET", "/api/backups/" + name), 403) << "скачать копию технологу нельзя";
+    EXPECT_EQ(status_of(cli, "GET", "/api/backups/..%2Fbakery.db"), 404) << "выход из каталога копий";
+
+    auto const schedule = CALL(srv, "PUT", "/api/backups/schedule", {{"enabled", true}, {"time", "02:30"}, {"keep", 7}});
+    ASSERT_EQ(schedule.status, 200) << schedule.body;
+    EXPECT_EQ(schedule.body.at("schedule").at("time"), "02:30");
+    EXPECT_EQ(schedule.body.at("schedule").at("keep"), 7);
+    EXPECT_EQ(CALL(srv, "PUT", "/api/backups/schedule", {{"keep", 1000}}).status, 400);
+    EXPECT_FALSE(CALL(srv, "GET", "/api/settings").body.contains("backup_time")) << "расписание не среди реквизитов";
+
+    auto const removed = CALL(srv, "DELETE", "/api/backups/" + name);
+    EXPECT_EQ(removed.status, 200) << removed.body;
+    EXPECT_EQ(removed.body.at("backups").size(), 0U);
 }

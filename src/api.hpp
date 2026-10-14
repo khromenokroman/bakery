@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 
+#include "backups.hpp"
 #include "catalog.hpp"
 #include "db.hpp"
 #include "docs.hpp"
@@ -29,8 +30,9 @@ class Api {
     /**
      * @param db база, к которой обращаются обработчики
      * @param web_dir каталог статических страниц; пустой, если раздавать не нужно
+     * @param backup_dir каталог резервных копий
      */
-    Api(Database &db, std::string web_dir);
+    Api(Database &db, std::string web_dir, std::string backup_dir = "backups");
 
     /// Регистрирует обработчики на сервере.
     void register_routes(httplib::Server &server);
@@ -61,6 +63,7 @@ class Api {
     void check_doc_access(DocType type) const;
 
     void register_auth(httplib::Server &server);
+    void register_backups(httplib::Server &server);
 
     void register_catalog(httplib::Server &server);
     void register_docs(httplib::Server &server);
@@ -70,6 +73,7 @@ class Api {
 
     std::optional<User> m_user; ///< вошедший пользователь текущего запроса; меняется только под блокировкой базы
     std::string m_web_dir;
+    Backups m_backups;
     Catalog m_catalog;
     Groups m_groups;
     Prices m_prices;

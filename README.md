@@ -196,6 +196,33 @@ API: `GET /api/period` → `{"closed_till": "2026-09-30"}` (или `null`), `PUT
 копия базы не даёт ни паролей, ни действующих сессий. Cookie сессии `HttpOnly` и `SameSite=Strict`.
 Подбор пароля не ограничивается числом попыток, поэтому пароль нужен не короче 6 символов и лучше длиннее.
 
+## Резервные копии
+
+Раздел «Копии» есть только у администратора. «Сделать копию сейчас» сохраняет копию базы на сервере,
+у каждой копии есть «Скачать» и «Удалить». Расписание: каждый день в заданное время; хранятся последние N
+копий по расписанию (по умолчанию 14), более старые удаляются сами, ручные копии остаются, пока их не
+удалить. Если сервер был выключен в назначенное время, копия делается при первой проверке после включения
+(проверка раз в 30 секунд). Ошибка копии по расписанию показывается в разделе и в журнале службы,
+повтор будет на следующий день.
+
+Копия делается командой SQLite `VACUUM INTO`: целостный снимок без остановки работы, на время копии
+остальные запросы ждут. Каталог копий: `/var/lib/bakery/backups` в пакете, иначе `backups` рядом
+с файлом базы; другой задаётся ключом `--backup-dir`. Копии лежат на том же диске, что и база:
+от поломки диска защищает только скачанная копия. В копии есть хеши паролей и сессий, поэтому
+скачивать её может только администратор.
+
+Восстановление из копии (из веб-интерфейса его нет намеренно, чтобы не затереть данные случайно):
+
+```sh
+sudo systemctl stop bakery
+sudo cp /var/lib/bakery/bakery.db /var/lib/bakery/bakery-before-restore.db
+sudo rm -f /var/lib/bakery/bakery.db-wal /var/lib/bakery/bakery.db-shm
+sudo install -o bakery -g bakery -m 640 bakery-20261014-030000-auto.db /var/lib/bakery/bakery.db
+sudo systemctl start bakery
+```
+
+Пользователи и пароли возвращаются те, что были на момент копии.
+
 ## Товарный отчёт
 
 Кнопка «Товарный отчёт за период» в разделе «Остатки»: отчёт по образцу ТОРГ-29 за период (по всем
@@ -218,7 +245,7 @@ API: `GET /api/period` → `{"closed_till": "2026-09-30"}` (или `null`), `PUT
 Скачать пакет своей версии Debian и установить через apt (зависимости apt поставит сам):
 
 ```sh
-sudo apt install ./bakery_0.18.0.0_amd64-debian13.deb
+sudo apt install ./bakery_0.22.1.0_amd64-debian13.deb
 ```
 
 Пакет ставит службу `bakery` и сразу её запускает: веб-интерфейс на http://адрес-сервера:8080/.
@@ -251,7 +278,7 @@ CI собирает и тестирует пакеты для Debian 12 и 13, �
 Debian 12 или 13:
 
 ```sh
-sudo apt install build-essential cmake libsqlite3-dev nlohmann-json3-dev libgtest-dev libgmock-dev
+sudo apt install build-essential cmake libsqlite3-dev libssl-dev nlohmann-json3-dev libgtest-dev libgmock-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
 ctest --test-dir build
@@ -293,7 +320,8 @@ HTTP-сервер [cpp-httplib](https://github.com/yhirose/cpp-httplib) подк
 
 ## База
 
-SQLite в режиме WAL, рядом с файлом базы появляются `-wal` и `-shm`. Для резервной копии на ходу:
+SQLite в режиме WAL, рядом с файлом базы появляются `-wal` и `-shm`. Резервные копии делаются в разделе
+«Копии» (см. «Резервные копии»), а из консоли на ходу так:
 
 ```sh
 sqlite3 bakery.db ".backup bakery-$(date +%F).db"
@@ -324,6 +352,11 @@ sqlite3 bakery.db ".backup bakery-$(date +%F).db"
 | `POST /api/auth/login` `{"login", "password"}` | `{"user"}` и cookie сессии `bakery_session` |
 | `POST /api/auth/logout` | закрывает сессию |
 | `PUT /api/auth/password` `{"old_password", "password"}` | смена своего пароля, новая cookie |
+| `GET /api/backups` | `{"dir", "schedule": {"enabled", "time", "keep", "last_run", "last_error"}, "backups": [{"name", "created", "size", "scheduled"}]}`, администратор |
+| `POST /api/backups` | копия сейчас, код 201, `created` - имя файла |
+| `PUT /api/backups/schedule` `{"enabled", "time", "keep"}` | расписание: ежедневно в `ЧЧ:ММ`, хранить `keep` копий (1-365) |
+| `GET /api/backups/{name}` | файл копии для скачивания |
+| `DELETE /api/backups/{name}` | удаление копии |
 | `GET /api/users` | `[{"id", "login", "name", "role", "blocked"}]`, администратор |
 | `POST /api/users` `{"login", "name", "role", "password"}` | новый пользователь, код 201; `role`: `admin`, `technologist`, `seller` |
 | `PUT /api/users/{id}` `{"name", "role", "blocked", "password"}` | изменение переданных полей |

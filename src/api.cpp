@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <charconv>
 #include <exception>
+#include <fstream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -107,8 +109,16 @@ std::string parse_moment(std::string const &date, std::string const &time) {
 
 } // namespace
 
-Api::Api(Database &db, std::string web_dir)
-    : m_web_dir{std::move(web_dir)}, m_catalog{db}, m_groups{db}, m_prices{db}, m_partners{db}, m_docs{db}, m_stock{db}, m_db{db} {}
+Api::Api(Database &db, std::string web_dir, std::string backup_dir)
+    : m_web_dir{std::move(web_dir)},
+      m_backups{db, std::move(backup_dir)},
+      m_catalog{db},
+      m_groups{db},
+      m_prices{db},
+      m_partners{db},
+      m_docs{db},
+      m_stock{db},
+      m_db{db} {}
 
 Api::Handler Api::guarded(Handler handler) { return guarded(Access::USER, std::move(handler)); }
 
@@ -154,6 +164,7 @@ void Api::register_routes(httplib::Server &server) {
                    send_json(res, {{"version", BAKERY_VERSION}, {"schema", current_schema_version(m_db)}});
                }));
     register_auth(server);
+    register_backups(server);
     register_catalog(server);
     register_docs(server);
     register_groups(server);
@@ -297,6 +308,75 @@ void Api::register_auth(httplib::Server &server) {
                        users.set_password(user.id, get_string(j, "password"));
                    }
                    send_json(res, to_json(users.get(user.id)));
+               }));
+}
+
+void Api::register_backups(httplib::Server &server) {
+    auto const state = [this] {
+        auto const schedule = m_backups.schedule();
+        auto list = nlohmann::json::array();
+        for (auto const &b : m_backups.list()) {
+            list.push_back({{"name", b.name}, {"created", b.created}, {"size", b.size}, {"scheduled", b.scheduled}});
+        }
+        return nlohmann::json{{"dir", m_backups.dir().string()},
+                              {"schedule",
+                               {{"enabled", schedule.enabled},
+                                {"time", schedule.time},
+                                {"keep", schedule.keep},
+                                {"last_run", schedule.last_run},
+                                {"last_error", schedule.last_error}}},
+                              {"backups", list}};
+    };
+
+    server.Get("/api/backups", guarded(Access::ADMIN, [state](httplib::Request const &, httplib::Response &res) { send_json(res, state()); }));
+
+    server.Post("/api/backups", guarded(Access::ADMIN, [this, state](httplib::Request const &, httplib::Response &res) {
+                    auto const backup = m_backups.create(false, local_now());
+                    auto out = state();
+                    out["created"] = backup.name;
+                    send_json(res, out, 201);
+                }));
+
+    server.Put("/api/backups/schedule", guarded(Access::ADMIN, [this, state](httplib::Request const &req, httplib::Response &res) {
+                   auto const j = parse_object(req.body);
+                   auto schedule = m_backups.schedule();
+                   if (auto const enabled = get_bool(j, "enabled")) {
+                       schedule.enabled = *enabled;
+                   }
+                   if (j.contains("time")) {
+                       schedule.time = get_string(j, "time");
+                   }
+                   if (j.contains("keep")) {
+                       schedule.keep = static_cast<int>(get_int(j, "keep"));
+                   }
+                   m_backups.set_schedule(schedule);
+                   send_json(res, state());
+               }));
+
+    server.Delete("/api/backups/:name", guarded(Access::ADMIN, [this, state](httplib::Request const &req, httplib::Response &res) {
+                      m_backups.remove(req.path_params.at("name"));
+                      send_json(res, state());
+                  }));
+
+    server.Get("/api/backups/:name", guarded(Access::ADMIN, [this](httplib::Request const &req, httplib::Response &res) {
+                   auto const name = req.path_params.at("name");
+                   // файл открывается сейчас: отдаётся целиком, даже если его удалят во время скачивания
+                   auto file = std::make_shared<std::ifstream>(m_backups.path(name), std::ios::binary);
+                   if (!*file) {
+                       throw NotFoundError("не удалось открыть копию " + name);
+                   }
+                   res.set_header("Content-Disposition", "attachment; filename=\"" + name + "\"");
+                   res.set_content_provider("application/vnd.sqlite3", [file](std::size_t, httplib::DataSink &sink) {
+                       char buf[64 * 1024];
+                       file->read(buf, sizeof buf);
+                       if (file->gcount() > 0) {
+                           sink.write(buf, static_cast<std::size_t>(file->gcount()));
+                       }
+                       if (!*file) {
+                           sink.done();
+                       }
+                       return true;
+                   });
                }));
 }
 

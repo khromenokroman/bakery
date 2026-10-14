@@ -24,6 +24,9 @@ COOKIE=$(curl -sf -D - -o /dev/null -X POST http://127.0.0.1:8080/api/auth/setup
 items() { curl -s -H "Cookie: $COOKIE" "http://127.0.0.1:$1/api/items"; }
 curl -sf -X POST http://127.0.0.1:8080/api/items -H 'Content-Type: application/json' -H "Cookie: $COOKIE" \
     -d '{"name":"Батон","kind":"product","unit":"pcs"}' >/dev/null && ok "запись в базу" || bad "запись в базу"
+curl -sf -X POST http://127.0.0.1:8080/api/backups -H "Cookie: $COOKIE" >/dev/null \
+    && [ "$(stat -c %U /var/lib/bakery/backups/bakery-*-manual.db 2>/dev/null)" = bakery ] \
+    && ok "резервная копия в /var/lib/bakery/backups" || bad "резервная копия: $(ls -la /var/lib/bakery/backups 2>&1)"
 
 sed -i 's/--port 8080/--port 8081/' /etc/default/bakery
 apt-get install -y -qq --reinstall /deb/*.deb >/dev/null 2>&1 || bad "переустановка"

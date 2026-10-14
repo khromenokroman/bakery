@@ -68,3 +68,13 @@ TEST(Options, Errors) {
     EXPECT_PARSE_FAILS("неверный порт: 65536", "--port", "65536");
     EXPECT_PARSE_FAILS("неверный порт: 80a", "--port", "80a");
 }
+
+/**
+ * @brief Каталог копий: --backup-dir или backups рядом с файлом базы.
+ */
+TEST(Options, BackupDir) {
+    EXPECT_EQ(backup_dir(parse_options({"--db", "/var/lib/bakery/bakery.db"})), "/var/lib/bakery/backups") << "по умолчанию рядом с базой";
+    EXPECT_EQ(backup_dir(parse_options({})), "backups") << "база в текущем каталоге";
+    EXPECT_EQ(backup_dir(parse_options({"--backup-dir", "/srv/copies"})), "/srv/copies");
+    EXPECT_THROW((void)parse_options({"--backup-dir"}), std::invalid_argument) << "ключ без значения";
+}

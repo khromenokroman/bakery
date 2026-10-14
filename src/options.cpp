@@ -1,6 +1,7 @@
 #include "options.hpp"
 
 #include <charconv>
+#include <filesystem>
 #include <stdexcept>
 
 namespace {
@@ -28,7 +29,7 @@ Options parse_options(std::vector<std::string_view> const &args) {
             opt.version = true;
             continue;
         }
-        if (key != "--db" && key != "--host" && key != "--port" && key != "--web") {
+        if (key != "--db" && key != "--host" && key != "--port" && key != "--web" && key != "--backup-dir") {
             throw std::invalid_argument("неизвестный ключ: " + std::string(key));
         }
         if (i + 1 >= args.size()) {
@@ -41,6 +42,8 @@ Options parse_options(std::vector<std::string_view> const &args) {
             opt.host = value;
         } else if (key == "--port") {
             opt.port = parse_port(value);
+        } else if (key == "--backup-dir") {
+            opt.backup_dir = value;
         } else {
             opt.web_dir = value;
         }
@@ -57,6 +60,14 @@ std::string usage() {
            "  --port ПОРТ    порт HTTP (по умолчанию 8080)\n"
            "  --web КАТАЛОГ  каталог веб-интерфейса (по умолчанию " BAKERY_WEB_DIR
            ")\n"
+           "  --backup-dir КАТАЛОГ  каталог резервных копий (по умолчанию backups рядом с базой)\n"
            "  -v, --version  показать версию\n"
            "  -h, --help     показать эту справку\n";
+}
+
+std::string backup_dir(Options const &opt) {
+    if (!opt.backup_dir.empty()) {
+        return opt.backup_dir;
+    }
+    return (std::filesystem::path(opt.db_path).parent_path() / "backups").string();
 }
