@@ -243,20 +243,19 @@ class CycleTest : public DbFixture {
     }
 
     /**
-     * @brief Перепроводит документы с момента from до конца или до ошибки, как веб-интерфейс.
+     * @brief Перепроводит документы с момента from до конца или до ошибки, как веб-интерфейс: по шагу,
+     * место прогона хранит сервер. Каждый раз новый Reposter - как после перезагрузки страницы.
      * @return последний шаг: без документа - дошли до конца, с ошибкой - остановились
      */
-    RepostStep repost_all(std::string const &from, std::optional<DocKey> after = std::nullopt) {
-        Reposter reposter{m_db};
-        auto const epoch = reposter.state().epoch;
+    RepostStep repost_all(std::string const &from, bool restart = false) {
         m_reposted.clear();
         for (;;) {
-            auto step = reposter.step(from, after, epoch);
+            auto step = Reposter{m_db}.step(from, restart);
+            restart = false;
             if (!step.doc || step.error) {
                 return step;
             }
             m_reposted.push_back(step.doc->id);
-            after = DocKey{moment(*step.doc), step.doc->id};
         }
     }
 
@@ -540,12 +539,20 @@ TEST_F(CycleTest, RepostStopsOnError) {
 
     auto const done = m_reposted;
     ASSERT_FALSE(done.empty());
+    auto const run = Reposter{m_db}.run();
+    ASSERT_TRUE(run) << "прогон, остановленный ошибкой, хранится в базе";
+    EXPECT_EQ(run->done, static_cast<std::int64_t>(done.size()));
+    EXPECT_EQ(run->error_id, m_inventory);
+    EXPECT_THAT(run->error, testing::HasSubstr("уйдёт в минус"));
+    ASSERT_TRUE(run->after);
+    EXPECT_EQ(run->after->id, done.back()) << "место - последний перепроведённый документ";
+
     m_docs.unpost(late_sale);
-    auto const last_ok = m_docs.get(done.back());
-    auto const rest = repost_all(from, DocKey{moment(last_ok), last_ok.id});
+    auto const rest = repost_all(from);
     EXPECT_FALSE(rest.error) << *rest.error;
     EXPECT_EQ(m_reposted.front(), m_inventory) << "продолжили с остановившего документа";
     EXPECT_FALSE(needed());
+    EXPECT_FALSE(Reposter{m_db}.run()) << "дошли до конца - прогон удалён";
     expect_state(LAST_DAY, expected().back());
 }
 
@@ -615,24 +622,62 @@ TEST_F(CycleTest, RepostKeepsNewerMark) {
     bigger.lines[0].qty = 110000;
     m_docs.update(bigger);
 
-    Reposter reposter{m_db};
-    auto const epoch = reposter.state().epoch;
-    auto const first = reposter.step("2026-10-02", std::nullopt, epoch);
+    auto const first = Reposter{m_db}.step("2026-10-02");
     ASSERT_TRUE(first.doc);
     post(make(DocType::WRITEOFF, "2026-10-03", "12:00", {{m_bread, 1000}}, "брак"));
-    std::optional<DocKey> after = DocKey{moment(*first.doc), first.doc->id};
-    for (;;) {
-        auto const step = reposter.step("2026-10-02", after, epoch);
-        ASSERT_FALSE(step.error) << *step.error;
-        if (!step.doc) {
-            EXPECT_TRUE(step.needed) << "во время перепроведения появилась новая правка задним числом";
-            break;
-        }
-        after = DocKey{moment(*step.doc), step.doc->id};
-    }
+    auto const rest = repost_all("2026-10-02");
+    ASSERT_FALSE(rest.error) << *rest.error;
+    EXPECT_TRUE(rest.needed) << "во время перепроведения появилась новая правка задним числом";
 
     EXPECT_FALSE(repost_all("2026-10-05").error);
     EXPECT_TRUE(needed()) << "начато 05.10, а отметка с 02.10";
     EXPECT_FALSE(repost_all("2026-10-02").error);
     EXPECT_FALSE(needed());
+}
+
+/**
+ * @brief Прогон продолжается после «перезагрузки» с того же места: уже перепроведённые документы не
+ * перепроводятся заново; прогон с другого момента или restart начинает сначала.
+ */
+TEST_F(CycleTest, RepostResumesFromDatabase) {
+    run_cycle();
+    auto bigger = m_docs.get(m_production);
+    bigger.lines[0].qty = 110000;
+    m_docs.update(bigger);
+    auto const total = Reposter{m_db}.count("2026-10-02 08:00:00");
+
+    std::vector<std::int64_t> first;
+    for (int i = 0; i < 3; ++i) {
+        auto const step = Reposter{m_db}.step("2026-10-02 08:00:00");
+        ASSERT_TRUE(step.doc);
+        EXPECT_EQ(step.done, i + 1) << "счётчик прогона";
+        first.push_back(step.doc->id);
+    }
+    auto run = Reposter{m_db}.run();
+    ASSERT_TRUE(run) << "прогон хранится в базе";
+    EXPECT_EQ(run->from, "2026-10-02 08:00:00");
+    EXPECT_EQ(run->done, 3);
+    ASSERT_TRUE(run->after);
+    EXPECT_EQ(run->after->id, first.back());
+    EXPECT_FALSE(run->updated.empty()) << "время последнего шага";
+
+    auto const resumed = repost_all("2026-10-02 08:00:00");
+    EXPECT_FALSE(resumed.error);
+    EXPECT_EQ(static_cast<std::int64_t>(m_reposted.size()), total - 3) << "продолжение не повторяет первые 3 документа";
+    for (auto const id : first) {
+        EXPECT_THAT(m_reposted, testing::Not(testing::Contains(id))) << "документ " << id << " перепроведён повторно";
+    }
+    EXPECT_EQ(resumed.done, total);
+    EXPECT_FALSE(needed());
+    EXPECT_FALSE(Reposter{m_db}.run());
+
+    // прогон с 05.10, затем с другого момента - начинается сначала
+    ASSERT_TRUE(Reposter{m_db}.step("2026-10-05").doc);
+    ASSERT_TRUE(Reposter{m_db}.step("2026-10-05").doc);
+    auto const other = Reposter{m_db}.step("2026-10-07");
+    EXPECT_EQ(other.done, 1) << "другой момент - новый прогон";
+    EXPECT_EQ(Reposter{m_db}.run()->from, "2026-10-07");
+    auto const again = Reposter{m_db}.step("2026-10-07", true);
+    EXPECT_EQ(again.done, 1) << "restart - сначала";
+    EXPECT_EQ(again.doc->id, other.doc->id) << "restart начинает с первого документа";
 }

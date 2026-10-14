@@ -572,6 +572,24 @@ void Api::register_docs(httplib::Server &server) {
             if (state.cause_id) {
                 out["cause"] = doc_header(m_docs.get(*state.cause_id));
             }
+            out["run"] = nullptr;
+            if (auto const run = reposter.run()) {
+                // незавершённый прогон: откуда, сколько пройдено и осталось, на чём остановился
+                auto const cursor = run->after.value_or(DocKey{run->from, 0});
+                nlohmann::json r{{"from", run->from}, {"done", run->done}, {"updated", run->updated},
+                                 {"after", nullptr},  {"error", nullptr},  {"remaining", reposter.remaining(cursor)}};
+                if (run->after) {
+                    try {
+                        r["after"] = doc_header(m_docs.get(run->after->id));
+                    } catch (NotFoundError const &) {
+                        r["after"] = {{"id", run->after->id}, {"moment", run->after->moment}, {"title", nullptr}};
+                    }
+                }
+                if (run->error_id) {
+                    r["error"] = {{"doc", doc_header(m_docs.get(*run->error_id))}, {"text", run->error}};
+                }
+                out["run"] = r;
+            }
             send_json(res, out);
         }));
 
@@ -579,24 +597,20 @@ void Api::register_docs(httplib::Server &server) {
                    send_json(res, {{"count", Reposter{m_db}.count(parse_moment(req.get_param_value("date"), req.get_param_value("time")))}});
                }));
 
-    server.Post("/api/repost/step", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
-                    auto const j = parse_object(req.body);
-                    auto const from = parse_moment(j.value("date", ""), j.value("time", ""));
-                    std::optional<DocKey> after;
-                    if (j.contains("after") && j["after"].is_object()) {
-                        auto const &a = j["after"];
-                        after = DocKey{a.value("moment", ""), a.value("id", std::int64_t{0})};
-                    }
-                    auto const step = Reposter{m_db}.step(from, after, j.value("epoch", std::int64_t{0}));
-                    nlohmann::json out{{"doc", nullptr}, {"error", nullptr}, {"remaining", step.remaining}, {"needed", step.needed}};
-                    if (step.doc) {
-                        out["doc"] = doc_header(*step.doc);
-                    }
-                    if (step.error) {
-                        out["error"] = *step.error;
-                    }
-                    send_json(res, out);
-                }));
+    server.Post(
+        "/api/repost/step", guarded(Access::TECHNOLOGIST, [this](httplib::Request const &req, httplib::Response &res) {
+            auto const j = parse_object(req.body);
+            auto const from = parse_moment(j.value("date", ""), j.value("time", ""));
+            auto const step = Reposter{m_db}.step(from, get_bool(j, "restart").value_or(false));
+            nlohmann::json out{{"doc", nullptr}, {"error", nullptr}, {"remaining", step.remaining}, {"done", step.done}, {"needed", step.needed}};
+            if (step.doc) {
+                out["doc"] = doc_header(*step.doc);
+            }
+            if (step.error) {
+                out["error"] = *step.error;
+            }
+            send_json(res, out);
+        }));
 
     server.Get("/api/stock", guarded([this](httplib::Request const &req, httplib::Response &res) {
                    std::optional<std::string> date;

@@ -656,23 +656,32 @@ TEST(ApiRepost, MarkAndSteps) {
     EXPECT_EQ(r.body.at("from").at("moment"), "2026-10-10 08:00:00");
     EXPECT_EQ(r.body.at("cause").at("title"), "Поступление из производства № 1 от 10.10.2026 08:00");
     EXPECT_EQ(r.body.at("count"), 2);
-    auto const epoch = r.body.at("epoch");
     EXPECT_EQ(CALL(srv, "GET", "/api/repost/count?date=2026-10-10&time=12:00").body.at("count"), 1) << "только инвентаризация";
+    EXPECT_TRUE(r.body.at("run").is_null()) << "прогона ещё нет: " << r.body;
 
-    nlohmann::json after = nullptr;
     std::vector<std::string> titles;
     for (int i = 0; i < 5; ++i) {
-        r = CALL(srv, "POST", "/api/repost/step", {{"date", "2026-10-10"}, {"time", "00:00"}, {"after", after}, {"epoch", epoch}});
+        r = CALL(srv, "POST", "/api/repost/step", {{"date", "2026-10-10"}, {"time", "00:00"}});
         ASSERT_EQ(r.status, 200) << r.body;
         ASSERT_TRUE(r.body.at("error").is_null()) << r.body;
         if (r.body.at("doc").is_null()) {
             break;
         }
         titles.push_back(r.body.at("doc").at("title"));
-        after = {{"moment", r.body.at("doc").at("moment")}, {"id", r.body.at("doc").at("id")}};
+        if (i == 0) {
+            // как после перезагрузки страницы: прогон виден в состоянии
+            auto const state = CALL(srv, "GET", "/api/repost");
+            ASSERT_FALSE(state.body.at("run").is_null()) << state.body;
+            EXPECT_EQ(state.body.at("run").at("from"), "2026-10-10 00:00:00");
+            EXPECT_EQ(state.body.at("run").at("done"), 1);
+            EXPECT_EQ(state.body.at("run").at("remaining"), 1) << "осталась инвентаризация";
+            EXPECT_EQ(state.body.at("run").at("after").at("title"), "Поступление из производства № 1 от 10.10.2026 08:00");
+        }
     }
     EXPECT_THAT(titles, testing::ElementsAre("Поступление из производства № 1 от 10.10.2026 08:00", "Инвентаризация № 1 от 10.10.2026 20:00"));
     EXPECT_EQ(r.body.at("needed"), false) << "дошли до конца: " << r.body;
+    EXPECT_EQ(r.body.at("done"), 2) << r.body;
+    EXPECT_TRUE(CALL(srv, "GET", "/api/repost").body.at("run").is_null()) << "прогон завершён";
     r = CALL(srv, "GET", "/api/stock");
     EXPECT_EQ(r.body.at(0).at("qty"), 9000) << "после инвентаризации насчитанное: " << r.body;
 

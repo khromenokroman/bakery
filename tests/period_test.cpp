@@ -155,16 +155,14 @@ TEST_F(PeriodTest, PendingRepostBlocksClosing) {
     EXPECT_EQ(period.closed_till(), "2026-09-29") << "до отметки закрыть можно";
 
     EXPECT_THROW_REASON((void)reposter.count("2026-09-29 12:00:00"), UserError, "перепроводить документы с 29.09.2026 12:00 нельзя");
-    EXPECT_THROW_REASON(reposter.step("2026-09-01 00:00:00", std::nullopt, state.epoch), UserError, "период по 29.09.2026 закрыт");
+    EXPECT_THROW_REASON(reposter.step("2026-09-01 00:00:00"), UserError, "период по 29.09.2026 закрыт");
 
-    std::optional<DocKey> after;
     for (int i = 0; i < 10; ++i) {
-        auto const step = reposter.step("2026-09-30 00:00:00", after, state.epoch);
+        auto const step = reposter.step("2026-09-30 00:00:00");
         ASSERT_FALSE(step.error.has_value()) << *step.error;
         if (!step.doc) {
             break;
         }
-        after = DocKey{moment(*step.doc), step.doc->id};
     }
     EXPECT_FALSE(reposter.state().from.has_value()) << "перепроведение дошло до конца, отметка снята";
     period.close("2026-10-05");
