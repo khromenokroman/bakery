@@ -3,6 +3,7 @@
 # Каждый сценарий получает свежую базу с батоном (шт), тортом (кг) и двумя заявками на 2026-10-12.
 #
 # Использование: tests/web_e2e.sh <путь к bakery> <каталог web>
+# E2E_ONLY=users.js - только этот сценарий.
 set -euo pipefail
 
 BIN=$1
@@ -36,6 +37,7 @@ failed=0
 for entry in "${SCENARIOS[@]}"; do
     script=${entry%%|*}
     hash=${entry#*|}
+    [ -n "${E2E_ONLY:-}" ] && [ "$script" != "$E2E_ONLY" ] && continue
     TMP=$(mktemp -d)
     "$BIN" --db "$TMP/e2e.db" --web "$WEB" --port "$PORT" >"$TMP/server.log" 2>&1 &
     PID=$!

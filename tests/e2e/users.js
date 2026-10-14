@@ -38,8 +38,15 @@ await sleep(800);
 expect(document.querySelector('main').textContent.includes('olga'), 'продавец не добавился: ' + message());
 log.push('добавлен продавец olga');
 
+// администратор вышел со страницы «Пользователи»: продавец попадает на стартовую страницу, а не туда (#14)
+expect(location.hash === '#/users', 'перед выходом администратор на «Пользователях»: ' + location.hash);
 await logout();
+expect(location.hash === '#/' || location.hash === '', 'выход сбрасывает адрес: ' + location.hash);
 await login('olga', 'secret1');
+expect(location.hash === '#/docs', 'после входа - «Документы», а не страница прошлого пользователя: ' + location.hash);
+expect(!message().includes('недостаточно прав') && document.querySelector('main h2').textContent === 'Документы',
+    'продавец не должен видеть ошибку прав после входа: ' + message());
+log.push('после выхода администратора продавец попал в «Документы» без ошибки');
 expect(!navText().includes('Пользователи') && !navText().includes('Организация') && !navText().includes('Цены'), 'у продавца лишние разделы: ' + navText());
 location.hash = '#/items';
 await sleep(700);
@@ -88,3 +95,12 @@ expect(document.querySelector('form.login'), 'старый пароль не д�
 await login('olga', 'olga-new');
 expect(!document.querySelector('form.login'), 'не вошла с новым паролем: ' + message());
 log.push('пароль сменён, вход с новым');
+
+// вход, когда в адресе страница, на которую у пользователя нет прав (истекла сессия, ссылка администратора) (#14)
+await logout();
+location.hash = '#/backups';
+await sleep(300);
+await login('olga', 'olga-new');
+expect(location.hash === '#/docs' && !message().includes('недостаточно прав'),
+    `продавец вошёл с адреса «Копий»: ${location.hash}, ${message()}`);
+log.push('вход с адреса чужого раздела открывает «Документы»');

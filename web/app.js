@@ -2151,6 +2151,7 @@ async function start() {
 async function logout() {
     await api('POST', 'auth/logout').catch(() => {});
     me = null;
+    history.replaceState(null, '', '#/');
     // экран входа - с сервера: в демонстрационной базе он подсказывает логины
     start();
 }
@@ -2177,6 +2178,8 @@ function renderLogin(setup, demo = false) {
                 ? api('POST', 'auth/setup', {login: login.value, name: name.value, password: password.value})
                 : api('POST', 'auth/login', {login: login.value, password: password.value}))) {
                 showMessage('');
+                // стартовая страница, а не та, где был прошлый пользователь: у нового может не быть на неё прав
+                history.replaceState(null, '', setup ? '#/items' : '#/docs');
                 start();
             }
         },
@@ -2200,7 +2203,7 @@ function renderLogin(setup, demo = false) {
         demoButton.textContent = 'Заполняю демонстрационную базу, это займёт до минуты…';
         if (await attempt(() => api('POST', 'auth/demo'))) {
             showMessage('');
-            location.hash = '#/docs';
+            history.replaceState(null, '', '#/docs');
             start();
         } else {
             demoButton.disabled = false;
