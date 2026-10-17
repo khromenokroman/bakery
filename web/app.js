@@ -640,6 +640,27 @@ function lineSummary(lines) {
     return lines.map(l => `${l.name} ${formatQty(l.qty)} ${UNITS[l.unit]}`).join(', ');
 }
 
+/**
+ * «3 / 5 кг + 7,5 шт» — количество позиций, суммарное количество по единицам.
+ *
+ * @param count количество позиций
+ * @param lines массив {qty, unit} строк заявки
+ */
+function itemCtx(count, lines) {
+    const byUnit = new Map();
+    for (const l of lines) {
+        const u = l.unit || 'шт';
+        byUnit.set(u, (byUnit.get(u) || 0) + l.qty);
+    }
+    const parts = [...byUnit.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([unit, qty]) => {
+        const whole = Math.trunc(qty / 1000);
+        const frac = String(Math.abs(qty % 1000)).padStart(3, '0').replace(/0+$/, '');
+        const qtyStr = frac ? `${whole},${frac}` : String(whole);
+        return qtyStr + ' ' + UNITS[unit] || unit;
+    });
+    return count + ' / ' + parts.join(' + ');
+}
+
 // ---------- заявки ----------
 
 async function renderOrders(view, params) {
@@ -652,11 +673,12 @@ async function renderOrders(view, params) {
     const rows = orders.map(doc => {
         const check = el('input', {type: 'checkbox', checked: true, onclick: e => e.stopPropagation()});
         checks.set(doc.id, check);
+        const itemCount = doc.lines.length;
         return el('tr', {class: 'link', onclick: () => { location.hash = '#/orders/' + doc.id; }},
             el('td', {}, check),
             el('td', {class: 'num'}, doc.number),
             el('td', {}, orderFrom(doc) || el('span', {class: 'muted'}, 'не указано')),
-            el('td', {}, lineSummary(doc.lines)));
+            el('td', {class: 'muted'}, itemCtx(itemCount, doc.lines)));
     });
 
     const calculate = () => {
@@ -677,7 +699,7 @@ async function renderOrders(view, params) {
             el('span', {class: 'muted'}, humanDate(date)),
             el('button', {class: 'primary', onclick: () => { location.hash = '#/orders/new?date=' + date; }}, 'Новая заявка')),
         el('div', {class: 'table-wrap'}, el('table', {},
-            el('thead', {}, el('tr', {}, el('th'), el('th', {class: 'num'}, '№'), el('th', {}, 'От кого'), el('th', {}, 'Состав'))),
+            el('thead', {}, el('tr', {}, el('th'), el('th', {class: 'num'}, '№'), el('th', {}, 'От кого'), el('th', {}, 'Позиций / Кол-во'))),
             el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', {colspan: 4, class: 'muted'}, 'На эту дату заявок нет'))))),
         rows.length ? el('div', {class: 'toolbar', style: 'margin-top: 12px'},
             el('button', {class: 'primary', onclick: calculate}, 'Рассчитать потребность')) : null);

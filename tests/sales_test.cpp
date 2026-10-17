@@ -171,3 +171,17 @@ TEST_F(SalesTest, EmptyAndInvalid) {
     EXPECT_EQ(r.total_margin, 0);
     EXPECT_EQ(r.total_margin_pct, 0);
 }
+
+/**
+ * @brief Отчёт за период с продажами: итог по всем трём группам (батон, торт, круассан).
+ */
+TEST_F(SalesTest, TotalsAllThreeGroups) {
+    auto const r = sales_report(m_db, "2026-10-01", "2026-10-31");
+    ASSERT_EQ(r.groups.size(), 3);
+    EXPECT_EQ(r.total_qty, 37000);
+    // себестоимость: (30000*3120 + 5000*10000 + 2000*1000) / 1000 = to_kop
+    EXPECT_EQ(r.total_cost, 145600);
+    // выручка: (30000*4500 + 5000*15000 + 2000*2000) / 1000 = to_kop
+    EXPECT_EQ(r.total_revenue, 214000);
+    EXPECT_EQ(r.total_margin, r.total_revenue - r.total_cost);
+}
