@@ -167,6 +167,103 @@ void add_revaluations(Database &db, std::int64_t type, std::string const &begin,
 
 } // namespace
 
+SalesReport sales_report(Database &db, std::string const &from, std::string const &to, std::optional<std::int64_t> group) {
+    check_date(from);
+    check_date(to);
+    if (from > to) {
+        throw UserError("начало периода позже конца");
+    }
+    auto const begin = from + " 00:00:00";
+    auto const end = to + " 23:59:59";
+
+    auto names = db.prepare("SELECT id, name FROM groups");
+    std::map<std::int64_t, std::string> group_names;
+    while (names.step()) {
+        group_names.emplace(names.column_int(0), names.column_text(1));
+    }
+
+    // реализация (+qty) и возврат (-qty): количество, себестоимость и выручка позиции за период;
+    // себестоимость и цена - из строк документов (л.п. на дату реализации), движение по знаку вида
+    auto items = db.prepare(
+        "SELECT i.id, i.name, i.unit, coalesce(i.group_id, 0),"
+        " sum(CASE WHEN d.type = 'sale' THEN l.qty ELSE -l.qty END),"
+        " coalesce(sum(CASE WHEN d.type = 'sale' THEN l.qty * coalesce(l.cost_kop, 0) ELSE -l.qty * coalesce(l.cost_kop, 0) END), 0),"
+        " coalesce(sum(CASE WHEN d.type = 'sale' THEN l.qty * coalesce(l.price_kop, 0) ELSE -l.qty * coalesce(l.price_kop, 0) END), 0),"
+        " coalesce(sum(CASE WHEN l.cost_kop IS NULL THEN 1 END), 0),"
+        " coalesce(sum(CASE WHEN l.price_kop IS NULL THEN 1 END), 0)"
+        " FROM doc_lines l JOIN docs d ON d.id = l.doc_id JOIN items i ON i.id = l.item_id"
+        " WHERE d.type IN ('sale', 'return') AND d.status = 'posted' AND d.date >= ?1 AND d.date <= ?2 AND " +
+        std::string(IN_GROUP) + " GROUP BY i.id ORDER BY i.name");
+    items.bind(1, begin).bind(2, end);
+    bind_group(items, group);
+
+    auto const pct = [](std::int64_t a, std::int64_t b) {
+        if (b <= 0) {
+            return std::int64_t{0};
+        }
+        auto const sign = a < 0 ? -1 : 1;
+        auto const n = a < 0 ? -a : a;
+        return sign * static_cast<std::int64_t>((n * 100 + b / 2) / b);
+    };
+
+    // накопление по группе товара: id -> порядковый номер в groups
+    SalesReport report;
+    std::map<std::int64_t, std::size_t> group_index;
+    auto const group_of = [&](std::int64_t id, std::string const &fallback) {
+        auto const it = group_index.find(id);
+        if (it != group_index.end()) {
+            return it->second;
+        }
+        SalesGroup g;
+        g.group_id = id;
+        g.name = id == 0 ? fallback : group_names.count(id) ? group_names.at(id) : "#" + std::to_string(id);
+        group_index.emplace(id, report.groups.size());
+        report.groups.push_back(std::move(g));
+        return report.groups.size() - 1;
+    };
+
+    while (items.step()) {
+        SalesLine line;
+        line.item_id = items.column_int(0);
+        line.name = items.column_text(1);
+        line.unit = unit_from_string(items.column_text(2));
+        auto const gid = items.column_int(3);
+        line.group_id = gid;
+        line.group_name = gid == 0 ? "Без группы" : (group_names.count(gid) ? group_names.at(gid) : "#" + std::to_string(gid));
+        line.qty = items.column_int(4);
+        line.cost = to_kop(items.column_int(5));
+        line.revenue = to_kop(items.column_int(6));
+        line.margin = line.revenue - line.cost;
+        line.margin_pct = pct(line.margin, line.cost);
+        report.lines_without_cost += items.column_int(7);
+        report.lines_without_price += items.column_int(8);
+        if (line.qty != 0 || line.cost != 0 || line.revenue != 0) {
+            auto const idx = group_of(gid, line.group_name);
+            auto &g = report.groups[idx];
+            g.items.push_back(line);
+            g.qty += line.qty;
+            g.cost += line.cost;
+            g.revenue += line.revenue;
+        }
+    }
+
+    for (auto &g : report.groups) {
+        g.margin = g.revenue - g.cost;
+        g.margin_pct = pct(g.margin, g.cost);
+        report.total_qty += g.qty;
+        report.total_cost += g.cost;
+        report.total_revenue += g.revenue;
+    }
+    report.total_margin = report.total_revenue - report.total_cost;
+    report.total_margin_pct = pct(report.total_margin, report.total_cost);
+
+    auto const by_name = [](SalesGroup const &a, SalesGroup const &b) { return a.name < b.name; };
+    std::sort(report.groups.begin(), report.groups.end(), by_name);
+    report.groups.erase(std::remove_if(report.groups.begin(), report.groups.end(), [](SalesGroup const &g) { return g.items.empty(); }),
+                        report.groups.end());
+    return report;
+}
+
 GoodsReport goods_report(Database &db, std::string const &from, std::string const &to, std::optional<std::int64_t> group,
                          std::optional<std::int64_t> price_type) {
     check_date(from);

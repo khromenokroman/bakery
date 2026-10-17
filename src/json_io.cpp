@@ -352,6 +352,45 @@ nlohmann::json to_json(GoodsReport const &report) {
     };
 }
 
+namespace {
+
+nlohmann::json sales_line(SalesLine const &l) {
+    return {
+        {"item_id", l.item_id}, {"name", l.name},       {"unit", to_string(l.unit)}, {"qty", l.qty},
+        {"cost", l.cost},       {"revenue", l.revenue}, {"margin", l.margin},        {"margin_pct", l.margin_pct},
+    };
+}
+
+} // namespace
+
+nlohmann::json to_json(SalesGroup const &g) {
+    auto items = nlohmann::json::array();
+    for (auto const &l : g.items) {
+        items.push_back(sales_line(l));
+    }
+    return {
+        {"group_id", g.group_id}, {"name", g.name},       {"items", items},     {"qty", g.qty},
+        {"cost", g.cost},         {"revenue", g.revenue}, {"margin", g.margin}, {"margin_pct", g.margin_pct},
+    };
+}
+
+nlohmann::json to_json(SalesReport const &report) {
+    auto groups = nlohmann::json::array();
+    for (auto const &g : report.groups) {
+        groups.push_back(to_json(g));
+    }
+    return {
+        {"groups", groups},
+        {"total_qty", report.total_qty},
+        {"total_cost", report.total_cost},
+        {"total_revenue", report.total_revenue},
+        {"total_margin", report.total_margin},
+        {"total_margin_pct", report.total_margin_pct},
+        {"lines_without_cost", report.lines_without_cost},
+        {"lines_without_price", report.lines_without_price},
+    };
+}
+
 nlohmann::json to_json(User const &user) {
     return {{"id", user.id}, {"login", user.login}, {"name", user.name}, {"role", to_string(user.role)}, {"blocked", user.blocked}};
 }

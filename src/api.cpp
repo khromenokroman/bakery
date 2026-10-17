@@ -666,6 +666,17 @@ void Api::register_docs(httplib::Server &server) {
                    send_json(res, to_json(goods_report(m_db, req.get_param_value("from"), req.get_param_value("to"), group, price_type)));
                }));
 
+    server.Get("/api/report/sales", guarded([this](httplib::Request const &req, httplib::Response &res) {
+                   check_date(req.get_param_value("from"));
+                   check_date(req.get_param_value("to"));
+                   std::optional<std::int64_t> group;
+                   if (req.has_param("group")) {
+                       group = query_id(req, "group");
+                       (void)m_groups.get(*group);
+                   }
+                   send_json(res, to_json(sales_report(m_db, req.get_param_value("from"), req.get_param_value("to"), group)));
+               }));
+
     server.Get("/api/requirements", guarded([this](httplib::Request const &req, httplib::Response &res) {
                    send_json(res, to_json(compute_requirements(m_db, parse_ids(req.get_param_value("docs")))));
                }));

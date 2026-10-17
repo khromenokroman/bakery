@@ -61,6 +61,62 @@ struct GoodsReport {
 };
 
 /**
+ * @brief Строка отчёта о продажах: товар и его за период суммы в копейках.
+ *
+ * qty - нетто (реализация минус возврат) в тысячных единицы; margin = revenue - cost.
+ * margin_pct - наценка в процентах к себестоимости, 0, если себестоимости нет.
+ */
+struct SalesLine {
+    std::int64_t item_id{};
+    std::string name;
+    Unit unit = Unit::PCS;
+    std::string group_name;
+    std::int64_t group_id{};
+    std::int64_t qty{};        ///< нетто, тысячные доли единицы
+    std::int64_t cost{};       ///< себестоимость, копейки
+    std::int64_t revenue{};    ///< цена продажи, копейки
+    std::int64_t margin{};     ///< наценка = revenue - cost, копейки
+    std::int64_t margin_pct{}; ///< наценка в % к себестоимости, 0 если себестоимости нет
+};
+
+/**
+ * @brief Группа товаров в отчёте о продажах с промежуточными итогами.
+ */
+struct SalesGroup {
+    std::int64_t group_id{}; ///< 0 - товары без группы
+    std::string name;
+    std::vector<SalesLine> items;
+    std::int64_t qty{};
+    std::int64_t cost{};
+    std::int64_t revenue{};
+    std::int64_t margin{};
+    std::int64_t margin_pct{};
+};
+
+/**
+ * @brief Отчёт о продажах за период: себестоимость, выручка и наценка по группам.
+ */
+struct SalesReport {
+    std::vector<SalesGroup> groups;
+    std::int64_t total_qty{};
+    std::int64_t total_cost{};
+    std::int64_t total_revenue{};
+    std::int64_t total_margin{}; ///< total_revenue - total_cost
+    std::int64_t total_margin_pct{};
+    std::int64_t lines_without_cost{}; ///< строк реализации/возврата без себестоимости (оценены нулём)
+    std::int64_t lines_without_price{}; ///< строк реализации/возврата без цены продажи (оценены нулём)
+};
+
+/**
+ * @brief Продажи за период [from, to] (даты включительно): реализация минус возврат,
+ * разбивка по группам товаров, итог по себестоимости, цене продажи и наценке.
+ * @param group позиции группы и её подгрупп; пусто - все группы
+ * @throws UserError неверные даты или from > to
+ */
+[[nodiscard]] SalesReport sales_report(Database &db, std::string const &from, std::string const &to,
+                                       std::optional<std::int64_t> group = std::nullopt);
+
+/**
  * @brief Строит товарный отчёт за период [from, to] (даты включительно) по проведённым документам.
  *
  * Суммы - по себестоимости из строк документов: стоимость движения = количество × себестоимость

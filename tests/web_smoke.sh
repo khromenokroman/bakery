@@ -121,6 +121,8 @@ PAGES=(
     "print/$SALE2?form=upd"
     "report?from=2026-10-01&to=2026-10-31"
     "report?from=2026-10-12&to=2026-10-12&group=$PASTRY"
+    "sales?from=2026-10-01&to=2026-10-31"
+    "sales?from=2026-10-12&to=2026-10-13&group=$PASTRY"
     "docs/$INV"
     "docs/new?type=inventory"
     "print/$INV"
@@ -139,6 +141,7 @@ SELLER_PAGES=(
     "docs/$SALE2"
     "settings"
     "repost"
+    "sales?from=2026-10-12&to=2026-10-13"
     "password"
 )
 

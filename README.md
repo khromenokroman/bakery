@@ -6,7 +6,7 @@
 
 Состояние: готовы номенклатура, рецептуры, заявки, расчёт потребности, поступление из производства,
 остатки, цены, реализация, возвраты, списание, инвентаризация, печатные формы, товарный отчёт,
-пользователи и роли.
+отчёт о продажах, пользователи и роли.
 
 ## Номенклатура и рецептуры
 
@@ -257,6 +257,14 @@ sudo systemctl start bakery
 нет цены позиции, переоценки нет, а движение оценивается нулём с предупреждением. Колонка
 по себестоимости от цены продажи не зависит.
 
+## Отчёт о продажах
+
+Раздел «Продажи»: отчёт для руководителя за период (по всем группам или по одной с подгруппами).
+По каждой группе - промежуточный итог, по каждой позиции - количество (реализация минус возврат,
+нетто), себестоимость (записанная в строках документов), выручка (по цене продажи в строках) и
+наценка с процентом к себестоимости. Итог по всему периоду - под таблицей. Строки без себестоимости
+или без цены продажи отчёт показывает предупреждением. Отчёт печатается.
+
 ## Установка
 
 Пакеты для Debian 12 и 13 лежат в [релизах](https://github.com/khromenokroman/bakery/releases).
@@ -463,6 +471,7 @@ sqlite3 bakery.db ".backup bakery-$(date +%F).db"
 | `POST /api/partners`, `GET/PUT/DELETE /api/partners/{id}` | клиенты; `PUT` меняет переданные поля |
 | `GET /api/settings`, `PUT /api/settings` `{"ключ": "значение"}` | реквизиты организации; `PUT` меняет переданные ключи |
 | `GET /api/report/goods?from=ГГГГ-ММ-ДД&to=ГГГГ-ММ-ДД&group={id}&price_type={id}` | товарный отчёт: `opening_sum`, `in_sum`, `out_sum`, `closing_sum` и те же `*_price_sum` по типу цен, `incoming`, `outgoing` (`sum`, `price_sum`), `items`, `lines_without_cost`, `moves_without_price` |
+| `GET /api/report/sales?from=ГГГГ-ММ-ДД&to=ГГГГ-ММ-ДД&group={id}` | отчёт о продажах: `groups` (`name`, `items` (`item_id`, `name`, `unit`, `qty`, `cost`, `revenue`, `margin`, `margin_pct`), `qty`, `cost`, `revenue`, `margin`, `margin_pct`), `total_qty`, `total_cost`, `total_revenue`, `total_margin`, `total_margin_pct`, `lines_without_cost`, `lines_without_price` |
 | `GET /api/requirements?docs=1,2,3` | `{"products", "intermediates", "raw": [{"item_id", "name", "kind", "unit", "qty", "has_recipe"}], "warnings"}` |
 
 `kind`: `raw` сырьё, `semi` полуфабрикат, `product` продукция. `unit`: `kg`, `l`, `pcs`.
