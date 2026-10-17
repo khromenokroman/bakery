@@ -1916,8 +1916,9 @@ async function renderSales(view, params) {
     const from = params.get('from') || isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
     const to = params.get('to') || today;
     const groupId = params.get('group') ? Number(params.get('group')) : null;
-    const [report, groups] = await Promise.all([
+    const [report, settings, groups] = await Promise.all([
         api('GET', `report/sales?from=${from}&to=${to}` + (groupId ? '&group=' + groupId : '')),
+        api('GET', 'settings'),
         api('GET', 'groups'),
     ]);
     const go = changes => {
@@ -1971,14 +1972,28 @@ async function renderSales(view, params) {
         'группа', el('select', {onchange: e => go({group: selectValue(e.target)})}, groupOptions(groups, groupId, 'все')),
         el('button', {class: 'primary', onclick: () => window.print()}, 'Печать'));
 
+    const groupLabel = groupId ? 'Группа: ' + groupPath(groups, groupId) : null;
+    const printTable = el('table', {class: 'print-table sales-print'},
+        el('thead', {}, el('tr', {},
+            el('th', {class: 'left'}, 'Наименование'),
+            el('th', {class: 'num'}, 'Кол-во'),
+            el('th', {class: 'num'}, 'Себестоимость, ₽'),
+            el('th', {class: 'num'}, 'Выручка, ₽'),
+            el('th', {class: 'num'}, 'Наценка, ₽'),
+            el('th', {class: 'num'}, 'Наценка, %'))),
+        el('tbody', {}, body));
+
     render(view,
-        el('h2', {}, 'Отчёт о продажах'),
-        toolbar,
-        warnCost,
-        warnPrice,
-        period,
-        table,
-        totals);
+        el('div', {class: 'print-sheet'},
+            el('p', {class: 'print-org'}, requisitesLine(settings.org_name || 'Организация не указана (раздел «Организация»)', settings.org_inn, settings.org_kpp, settings.org_address)),
+            el('h2', {class: 'print-title'}, 'Отчёт о продажах'),
+            el('p', {}, period.textContent),
+            groupLabel ? el('p', {}, groupLabel) : null,
+            printTable,
+            el('p', {class: 'print-total'}, 'Итого: ' + totalText),
+            el('div', {class: 'print-signs'},
+                el('div', {}, (settings.accountant || 'Бухгалтер _______________ /______________/')),
+                el('div', {}, 'Руководитель _______________ /______________/'))));
 }
 
 // ---------- остатки ----------
