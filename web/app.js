@@ -1883,6 +1883,82 @@ async function renderReport(view, params) {
                 el('div', {}, 'Материально ответственное лицо ____________________ /' + (settings.storekeeper || '____________') + '/'))));
 }
 
+// ---------- продажи ----------
+
+/**
+ * Отчёт о продажах для руководителя: реализация минус возврат за период,
+ * по группам товаров с себестоимостью, выручкой и наценкой.
+ */
+async function renderSales(view, params) {
+    const today = isoDate(new Date());
+    const from = params.get('from') || isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+    const to = params.get('to') || today;
+    const groupId = params.get('group') ? Number(params.get('group')) : null;
+    const [report, groups] = await Promise.all([
+        api('GET', `report/sales?from=${from}&to=${to}` + (groupId ? '&group=' + groupId : '')),
+        api('GET', 'groups'),
+    ]);
+    const go = changes => {
+        const p = {from, to, group: groupId, ...changes};
+        location.hash = '#/sales?' + Object.entries(p).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join('&');
+    };
+    const d = iso => humanDate(iso).split(',')[0];
+    const col = (label, cls) => el('th', {class: cls || ''}, label);
+
+    const body = [];
+    for (const g of report.groups) {
+        body.push(el('tr', {class: 'f-subtotal'},
+            el('td', {}, el('strong', {}, g.name)),
+            el('td', {class: 'num'}, formatQty(g.qty)),
+            el('td', {class: 'num'}, formatMoney(g.cost)),
+            el('td', {class: 'num'}, formatMoney(g.revenue)),
+            el('td', {class: 'num'}, formatMoney(g.margin)),
+            el('td', {class: 'num'}, (g.margin_pct >= 0 ? '' : '−') + Math.abs(g.margin_pct) + '%')));
+        for (const l of g.items) {
+            body.push(el('tr', {},
+                el('td', {style: 'padding-left: 20px'}, l.name),
+                el('td', {class: 'num'}, formatQty(l.qty)),
+                el('td', {class: 'num'}, formatMoney(l.cost)),
+                el('td', {class: 'num'}, formatMoney(l.revenue)),
+                el('td', {class: 'num'}, formatMoney(l.margin)),
+                el('td', {class: 'num'}, (l.margin_pct >= 0 ? '' : '−') + Math.abs(l.margin_pct) + '%')));
+        }
+    }
+    if (!body.length) {
+        body.push(el('tr', {}, el('td', {colspan: 6, class: 'muted'}, 'Продаж за период нет')));
+    }
+
+    const period = el('p', {}, 'Период: с ' + d(from) + ' по ' + d(to));
+    const table = el('div', {class: 'table-wrap'}, el('table', {class: 'sales'},
+        el('thead', {}, el('tr', {},
+            col('Наименование'), col('Количество', 'num'), col('Себестоимость, ₽', 'num'),
+            col('Выручка, ₽', 'num'), col('Наценка, ₽', 'num'), col('Наценка, %', 'num'))),
+        el('tbody', {}, body)));
+    const warnCost = report.lines_without_cost
+        ? el('div', {class: 'warnings no-print'}, `⚠ строк без себестоимости: ${report.lines_without_cost}, они оценены нулём.`)
+        : null;
+    const warnPrice = report.lines_without_price
+        ? el('div', {class: 'warnings no-print'}, `⚠ строк без цены продажи: ${report.lines_without_price}, они оценены нулём.`)
+        : null;
+    const totalText = `${formatQty(report.total_qty)} · Себестоимость ${formatMoney(report.total_cost)} ₽ · `
+        + `Выручка ${formatMoney(report.total_revenue)} ₽ · Наценка ${formatMoney(report.total_margin)} ₽ (${report.total_margin_pct}%)`;
+    const totals = el('div', {class: 'totals', style: 'margin-top: 12px'}, el('span', {}, 'Итого: ', el('strong', {}, totalText)));
+    const toolbar = el('div', {class: 'toolbar no-print'},
+        'с', el('input', {type: 'date', value: from, onchange: e => e.target.value && go({from: e.target.value})}),
+        'по', el('input', {type: 'date', value: to, onchange: e => e.target.value && go({to: e.target.value})}),
+        'группа', el('select', {onchange: e => go({group: selectValue(e.target)})}, groupOptions(groups, groupId, 'все')),
+        el('button', {class: 'primary', onclick: () => window.print()}, 'Печать'));
+
+    render(view,
+        el('h2', {}, 'Отчёт о продажах'),
+        toolbar,
+        warnCost,
+        warnPrice,
+        period,
+        table,
+        totals);
+}
+
 // ---------- остатки ----------
 
 async function renderStock(view, params) {
@@ -2389,6 +2465,8 @@ async function route() {
             await renderPrices(view, params);
         } else if (hash === '#/report') {
             await renderReport(view, params);
+        } else if (hash === '#/sales') {
+            await renderSales(view, params);
         } else if (hash === '#/stock') {
             await renderStock(view, params);
         } else if (hash === '#/repost') {

@@ -23,6 +23,7 @@ SCENARIOS=(
     "return_writeoff.js|#/docs"
     "settings_print.js|#/docs"
     "report.js|#/docs"
+    "sales_report.js|#/docs"
     "inventory.js|#/docs"
     "repost.js|#/docs"
     "period.js|#/docs"

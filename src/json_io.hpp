@@ -73,5 +73,8 @@
 
 [[nodiscard]] nlohmann::json to_json(GoodsReport const &report);
 
+[[nodiscard]] nlohmann::json to_json(SalesGroup const &group);
+[[nodiscard]] nlohmann::json to_json(SalesReport const &report);
+
 /// Пользователь без хеша пароля.
 [[nodiscard]] nlohmann::json to_json(User const &user);
