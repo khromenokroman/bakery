@@ -1984,6 +1984,16 @@ async function renderSales(view, params) {
         el('tbody', {}, body));
 
     render(view,
+        el('h2', {}, 'Отчёт о продажах'),
+        el('div', {class: 'toolbar no-print'},
+            'с', el('input', {type: 'date', value: from, onchange: e => e.target.value && go({from: e.target.value})}),
+            'по', el('input', {type: 'date', value: to, onchange: e => e.target.value && go({to: e.target.value})}),
+            'группа', el('select', {onchange: e => go({group: selectValue(e.target)})}, groupOptions(groups, groupId, 'все')),
+            el('button', {class: 'primary', onclick: () => window.print()}, 'Печать')),
+        warnCost,
+        warnPrice,
+        totals,
+        table,
         el('div', {class: 'print-sheet'},
             el('p', {class: 'print-org'}, requisitesLine(settings.org_name || 'Организация не указана (раздел «Организация»)', settings.org_inn, settings.org_kpp, settings.org_address)),
             el('h2', {class: 'print-title'}, 'Отчёт о продажах'),
