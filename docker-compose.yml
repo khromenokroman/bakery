@@ -1,0 +1,16 @@
+# Запуск bakery в Docker: docker compose up -d, интерфейс http://адрес:8080/
+# Данные (база и резервные копии) в томе bakery-data.
+services:
+  bakery:
+    image: ghcr.io/khromenokroman/bakery:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # часовой пояс для дат документов и копий по расписанию (03:00 по местному времени)
+      TZ: Europe/Moscow
+    volumes:
+      - bakery-data:/data
+
+volumes:
+  bakery-data:
