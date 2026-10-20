@@ -1,0 +1,10 @@
+.git
+.github
+.idea
+build
+cmake-build-*
+*.db
+*.db-wal
+*.db-shm
+CLAUDE.md
+AGENTS.md
