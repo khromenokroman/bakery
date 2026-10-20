@@ -339,8 +339,32 @@ git tag v0.18.0.0 && git push origin v0.18.0.0
 ```
 
 CI собирает и тестирует пакеты для Debian 12 и 13, проверяет установку, обновление и удаление в
-контейнере с systemd (`tests/deb_install.sh`) и создаёт релиз с пакетами. Тег, не совпадающий с
+контейнере с systemd (`tests/deb_install.sh`), собирает и проверяет образ Docker и публикует его в GHCR,
+создаёт релиз с пакетами. Тег, не совпадающий с
 версией, CI отклоняет.
+
+## Docker
+
+Образ `ghcr.io/khromenokroman/bakery` (теги версий и `latest`, 80 МБ, Debian 13 slim, работает от
+пользователя uid 10001). Установка на машине с Docker:
+
+```sh
+sudo apt install docker.io docker-compose
+mkdir bakery && cd bakery
+wget https://raw.githubusercontent.com/khromenokroman/bakery/master/docker-compose.yml
+sudo docker-compose up -d
+```
+
+Интерфейс: http://адрес:8080/, при первом входе создаётся администратор или демонстрационная база.
+База и резервные копии в томе `bakery-data` (`/data` в контейнере). Часовой пояс для дат документов и
+копий по расписанию задаётся `TZ` в `docker-compose.yml`. Обновление: `sudo docker-compose pull &&
+sudo docker-compose up -d`. Копию тома на другой носитель: `sudo docker run --rm -v bakery_bakery-data:/data
+-v "$PWD":/out debian:trixie-slim tar czf /out/bakery-data.tgz -C /data .`
+
+Сброс к чистому состоянию: `sudo docker-compose down -v && sudo docker-compose up -d` (том удаляется
+вместе с базой и копиями, сначала сохраните копию тома, если данные могут понадобиться).
+
+Проверка образа: `docker build -t bakery:test . && tests/docker_run.sh bakery:test`.
 
 ## Сборка
 
